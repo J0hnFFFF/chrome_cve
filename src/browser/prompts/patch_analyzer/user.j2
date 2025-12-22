@@ -1,0 +1,44 @@
+Analyze the following Chromium security patch to understand the vulnerability and how to trigger it.
+
+# CVE: {{ cve_id }}
+
+## Background Information
+{{ cve_knowledge }}
+
+## Patch Diff to Analyze
+
+```diff
+{{ patch_diff }}
+```
+
+# Analysis Instructions
+
+1. **Read the patch carefully**: Identify all modified files, functions, and the exact changes made.
+
+2. **Understand the vulnerable code path**:
+   - What was the code doing before the fix?
+   - What incorrect assumption or missing check existed?
+
+3. **Identify the fix**:
+   - What check/validation was added?
+   - What logic was corrected?
+
+4. **Determine how to trigger**:
+   - What JavaScript/HTML constructs reach this code?
+   - What sequence of operations triggers the bug?
+   - What object types or values are needed?
+
+5. **Develop PoC strategy**:
+   - What's the minimum code to trigger?
+   - How do we verify the vulnerability is triggered?
+   - What observable behavior indicates success?
+
+## Important Considerations
+
+- Focus on the REMOVED or MODIFIED lines - they show the vulnerable behavior
+- Pay attention to type checks, null checks, bounds checks
+- Consider race conditions if timing-related changes are present
+- For V8 bugs, think about JIT optimization and deoptimization
+- For Blink bugs, think about DOM lifecycle and memory management
+
+Provide your complete analysis now.
