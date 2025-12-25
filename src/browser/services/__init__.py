@@ -1,4 +1,4 @@
-# External Analysis Services (CodeQL, Ghidra, etc.)
+# Services - External Analysis and LLM
 
 from .codeql_service import (
     CodeQLService,
@@ -11,4 +11,19 @@ from .ghidra_service import (
     GhidraFunction,
     GhidraAnalysisResult,
     create_ghidra_service,
+)
+
+from .llm_service import (
+    LLMService,
+    LLMSession,
+    LLMBackend,
+    OpenAIBackend,
+    AnthropicBackend,
+    Message,
+    MessageRole,
+    ToolDefinition,
+    ReActStep,
+    LLMResponse,
+    create_llm_service,
+    create_tool_from_function,
 )

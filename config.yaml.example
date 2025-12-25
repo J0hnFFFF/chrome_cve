@@ -1,0 +1,41 @@
+# Chrome CVE Reproducer Configuration
+# Copy to config.yaml and modify as needed
+
+general:
+  output_dir: "./output"
+  log_level: "INFO"
+
+llm:
+  # Model name (gpt-4o, gpt-4-turbo, claude-sonnet-4-20250514, etc.)
+  default_model: "gpt-4o"
+  temperature: 0.0
+  max_retries: 3
+  timeout: 120
+
+  # OpenAI settings
+  openai_api_key: ""          # Or set OPENAI_API_KEY env var
+  openai_base_url: ""         # Custom base URL (e.g., http://localhost:8000/v1)
+
+  # Anthropic settings
+  anthropic_api_key: ""       # Or set ANTHROPIC_API_KEY env var
+  anthropic_base_url: ""      # Custom base URL
+
+intel:
+  nvd_api_key: ""             # NVD API key for CVE info
+  github_token: ""            # GitHub token for API access
+  timeout: 30
+  cache_ttl: 3600
+
+execution:
+  chrome_path: ""             # Path to Chrome executable
+  d8_path: ""                 # Path to d8 (V8 shell) executable
+  timeout: 60
+  asan_enabled: true
+
+memory:
+  storage_path: "./volumes/memory"
+  vector_db_path: "./volumes/vectors"
+
+agents:
+  max_retries: 3
+  critic_enabled: true

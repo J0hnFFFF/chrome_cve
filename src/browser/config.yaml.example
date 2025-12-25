@@ -1,0 +1,42 @@
+# Chrome CVE Reproducer Configuration
+# Copy this file to config.yaml and modify as needed
+
+# General settings
+general:
+  output_dir: "./output"
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+
+# LLM settings
+llm:
+  default_model: "deepseek-chat"  # gpt-4o, gpt-4-turbo, claude-3-opus, etc.
+  temperature: 0.0
+  max_retries: 3
+  timeout: 120
+  # API keys can also be set via environment variables:
+  # OPENAI_API_KEY, ANTHROPIC_API_KEY
+  openai_api_key: "sk-46ecb81e8ebb4aceb65c8f828975bb83"
+  # anthropic_api_key: ""
+
+# Intelligence collection settings
+intel:
+  timeout: 30
+  cache_ttl: 3600  # seconds
+  # nvd_api_key: ""  # Optional, for higher rate limits
+  # github_token: ""  # For GitHub API access
+
+# Execution settings
+execution:
+  # chrome_path: "/path/to/chrome"
+  # d8_path: "/path/to/d8"
+  timeout: 60
+  asan_enabled: true
+
+# Memory system settings
+memory:
+  storage_path: "./volumes/memory"
+  vector_db_path: "./volumes/vectors"
+
+# Agent settings
+agents:
+  max_retries: 3
+  critic_enabled: true

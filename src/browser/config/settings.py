@@ -1,0 +1,116 @@
+"""
+Settings Data Classes
+
+Typed configuration settings.
+"""
+
+from dataclasses import dataclass, field
+from typing import Dict, Any, Optional
+
+
+@dataclass
+class LLMConfig:
+    """LLM-related configuration."""
+    default_model: str = "gpt-4o"
+    temperature: float = 0.0
+    max_retries: int = 3
+    timeout: int = 120
+    openai_api_key: str = ""
+    openai_base_url: str = ""  # Custom base URL for OpenAI-compatible APIs
+    anthropic_api_key: str = ""
+    anthropic_base_url: str = ""  # Custom base URL for Anthropic API
+
+
+@dataclass
+class IntelConfig:
+    """Intelligence collection configuration."""
+    nvd_api_key: str = ""
+    github_token: str = ""
+    timeout: int = 30
+    cache_ttl: int = 3600
+
+
+@dataclass
+class ExecutionConfig:
+    """Execution-related configuration."""
+    chrome_path: str = ""
+    d8_path: str = ""
+    timeout: int = 60
+    asan_enabled: bool = True
+
+
+@dataclass
+class MemoryConfig:
+    """Memory system configuration."""
+    storage_path: str = "./volumes/memory"
+    vector_db_path: str = "./volumes/vectors"
+
+
+@dataclass
+class AgentConfig:
+    """Agent-related configuration."""
+    max_retries: int = 3
+    critic_enabled: bool = True
+
+
+@dataclass
+class GeneralConfig:
+    """General configuration."""
+    output_dir: str = "./output"
+    log_level: str = "INFO"
+
+
+@dataclass
+class Settings:
+    """Complete application settings."""
+    general: GeneralConfig = field(default_factory=GeneralConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    intel: IntelConfig = field(default_factory=IntelConfig)
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
+    agents: AgentConfig = field(default_factory=AgentConfig)
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "Settings":
+        """Create Settings from a dictionary."""
+        return cls(
+            general=GeneralConfig(**d.get("general", {})),
+            llm=LLMConfig(**d.get("llm", {})),
+            intel=IntelConfig(**d.get("intel", {})),
+            execution=ExecutionConfig(**d.get("execution", {})),
+            memory=MemoryConfig(**d.get("memory", {})),
+            agents=AgentConfig(**d.get("agents", {})),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "general": {
+                "output_dir": self.general.output_dir,
+                "log_level": self.general.log_level,
+            },
+            "llm": {
+                "default_model": self.llm.default_model,
+                "temperature": self.llm.temperature,
+                "max_retries": self.llm.max_retries,
+                "timeout": self.llm.timeout,
+            },
+            "intel": {
+                "timeout": self.intel.timeout,
+                "cache_ttl": self.intel.cache_ttl,
+            },
+            "execution": {
+                "chrome_path": self.execution.chrome_path,
+                "d8_path": self.execution.d8_path,
+                "timeout": self.execution.timeout,
+                "asan_enabled": self.execution.asan_enabled,
+            },
+            "memory": {
+                "storage_path": self.memory.storage_path,
+                "vector_db_path": self.memory.vector_db_path,
+            },
+            "agents": {
+                "max_retries": self.agents.max_retries,
+                "critic_enabled": self.agents.critic_enabled,
+            },
+        }

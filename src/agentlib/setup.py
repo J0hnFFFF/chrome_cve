@@ -4,7 +4,7 @@ setup(
     name="agentlib",
     version="0.1.3",
     description="Library to make writing LLM agent components easy",
-    long_description=open("readme.md").read(),
+    long_description=open("readme.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/your_repo_url",
     packages=find_packages(),

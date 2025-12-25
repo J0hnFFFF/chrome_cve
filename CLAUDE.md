@@ -4,7 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Browser CVE Reproducer - An LLM-based multi-agent framework for Chrome/Chromium CVE reproduction. The system analyzes patches, understands vulnerabilities, and generates working PoCs.
+Chrome CVE Reproducer - An LLM-based multi-agent framework for Chrome/Chromium CVE reproduction. The system analyzes patches, understands vulnerabilities, and generates working PoCs through intelligent agent collaboration.
+
+**Core Design Principles:**
+1. **Multi-Agent Collaboration**: Specialized agents (Analyzer, Generator, Verifier, Critic) with reflection loops
+2. **Plugin Architecture**: Extensible plugins with LLM-based dynamic generation
+3. **Memory System**: Experience reuse through episode memory and semantic knowledge
 
 ## Quick Start
 
@@ -12,10 +17,11 @@ Browser CVE Reproducer - An LLM-based multi-agent framework for Chrome/Chromium 
 # Install agentlib
 cd src/agentlib && pip install -e .
 
-# Create .env with API key
-echo "OPENAI_API_KEY=sk-..." > src/browser/.env
+# Create config file
+cp src/browser/config.yaml.example src/browser/config.yaml
+# Edit config.yaml with your API keys
 
-# Run
+# Run the multi-agent pipeline
 cd src/browser
 python main.py --cve CVE-2024-XXXX
 ```
@@ -23,32 +29,111 @@ python main.py --cve CVE-2024-XXXX
 ## Project Structure
 
 ```
-src/
-├── agentlib/                    # Core LLM agent framework (reused)
+src/browser/
+├── main.py                      # CLI entry point
+├── pipeline.py                  # Multi-agent pipeline orchestrator
 │
-└── browser/                     # Browser CVE reproduction
-    ├── main.py                  # Entry point & pipeline orchestrator
-    │
-    ├── agents/                  # LLM Agents
-    │   ├── base.py              # Base classes & XMLOutputParser
-    │   ├── patch_analyzer.py    # Analyzes patches → vulnerability understanding
-    │   ├── poc_generator.py     # Generates HTML/JS PoC
-    │   └── crash_verifier.py    # Verifies crash reproducibility
-    │
-    ├── tools/                   # Agent tools
-    │   ├── chromium_tools.py    # Fetch patches, search code
-    │   ├── chrome_tools.py      # Download Chrome, run PoC, detect crash
-    │   └── common_tools.py      # File operations
-    │
-    ├── prompts/                 # Jinja2 templates
-    │   ├── patch_analyzer/
-    │   ├── poc_generator/
-    │   └── crash_verifier/
-    │
-    ├── data/                    # Data processors
-    │   └── cve_processor.py     # Fetch CVE info from NVD/Chromium
-    │
-    └── services/                # External services (future: CodeQL, Ghidra)
+├── agents/                      # Agent System
+│   ├── base.py                  # Base classes, XMLOutputParser
+│   ├── patch_analyzer.py        # Legacy: patch analysis
+│   ├── poc_generator.py         # Legacy: PoC generation
+│   ├── crash_verifier.py        # Legacy: crash verification
+│   └── multi/                   # NEW: Multi-Agent System
+│       ├── base.py              # BaseReproAgent, AgentMessage
+│       ├── orchestrator.py      # OrchestratorAgent - task coordination
+│       ├── analyzer.py          # AnalyzerAgent - patch analysis
+│       ├── generator.py         # GeneratorAgent - PoC generation
+│       ├── verifier.py          # VerifierAgent - crash verification
+│       └── critic.py            # CriticAgent - review & reflection
+│
+├── plugins/                     # Plugin System
+│   ├── base.py                  # PluginBase, AnalyzerPlugin, GeneratorPlugin
+│   ├── registry.py              # PluginRegistry - plugin management
+│   ├── dynamic.py               # DynamicPluginGenerator - LLM plugin creation
+│   ├── analyzers/               # Built-in analyzer plugins
+│   │   ├── v8_analyzer.py       # V8/JavaScript analysis
+│   │   ├── blink_analyzer.py    # Blink/rendering analysis
+│   │   └── generic_analyzer.py  # Fallback analyzer
+│   ├── generators/              # Built-in generator plugins
+│   │   ├── js_generator.py      # JavaScript PoC
+│   │   └── html_generator.py    # HTML PoC
+│   └── verifiers/               # Built-in verifier plugins
+│       ├── d8_verifier.py       # d8 shell verification
+│       └── chrome_verifier.py   # Chrome browser verification
+│
+├── memory/                      # Memory System
+│   ├── episode.py               # EpisodeMemory - CVE case storage
+│   ├── semantic.py              # SemanticMemory - knowledge storage
+│   ├── learning.py              # LearningEngine - experience extraction
+│   └── knowledge_loader.py      # Bridge to existing knowledge files
+│
+├── intel/                       # Intelligence Collection
+│   ├── base.py                  # IntelSource, IntelResult
+│   ├── sources.py               # NVD, Gitiles, GitHub, CISA sources
+│   ├── collector.py             # IntelCollector - multi-source gathering
+│   ├── fusion.py                # IntelFusion - data merging
+│   └── version.py               # ChromeVersionMapper, ChromeDownloader
+│
+├── tools/                       # Tool Layer
+│   ├── chromium_tools.py        # Gitiles API, code search
+│   ├── chrome_tools.py          # Chrome download, execution
+│   ├── common_tools.py          # File operations, commands
+│   ├── analysis_tools.py        # CodeQL, Ghidra integration
+│   ├── execution.py             # D8Executor, ChromeExecutor
+│   └── debug.py                 # ASANParser, CrashAnalyzer
+│
+├── models/                      # Data Models
+│   ├── cve.py                   # CVEInfo, PatchInfo
+│   ├── analysis.py              # AnalysisResult
+│   ├── poc.py                   # PoCResult
+│   ├── verify.py                # VerifyResult
+│   └── message.py               # AgentMessage, MessageType
+│
+├── config/                      # Configuration
+│   ├── loader.py                # ConfigLoader
+│   └── settings.py              # Settings dataclasses
+│
+├── knowledge/                   # Component Knowledge Bases
+│   ├── v8_knowledge.py          # V8/JavaScript engine
+│   ├── blink_knowledge.py       # Blink renderer
+│   ├── skia_knowledge.py        # Skia graphics
+│   ├── webgl_knowledge.py       # WebGL/GPU
+│   ├── wasm_knowledge.py        # WebAssembly
+│   └── ...                      # Other components
+│
+└── prompts/                     # Jinja2 prompt templates
+```
+
+## Architecture
+
+```
+                    ┌─────────────────────────────────────────┐
+                    │          OrchestratorAgent              │
+                    │    (Task coordination, state mgmt)      │
+                    └──────────────────┬──────────────────────┘
+                                       │ AgentMessage
+           ┌───────────────┬───────────┼───────────┬───────────────┐
+           ▼               ▼           ▼           ▼               ▼
+    ┌────────────┐  ┌────────────┐ ┌────────────┐ ┌────────────┐
+    │  Analyzer  │  │ Generator  │ │  Verifier  │ │   Critic   │
+    │   Agent    │  │   Agent    │ │   Agent    │ │   Agent    │
+    └─────┬──────┘  └─────┬──────┘ └─────┬──────┘ └─────┬──────┘
+          │               │              │              │
+          ▼               ▼              ▼              ▼
+    ┌─────────────────────────────────────────────────────────────┐
+    │                      Plugin System                          │
+    │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+    │  │   Analyzer   │  │  Generator   │  │   Verifier   │      │
+    │  │   Plugins    │  │   Plugins    │  │   Plugins    │      │
+    │  └──────────────┘  └──────────────┘  └──────────────┘      │
+    └─────────────────────────────────────────────────────────────┘
+                    │               │               │
+           ┌────────┴───────┬───────┴───────┬───────┴────────┐
+           ▼                ▼               ▼                ▼
+    ┌────────────┐   ┌────────────┐   ┌────────────┐   ┌────────────┐
+    │   Intel    │   │   Memory   │   │   Tools    │   │ Knowledge  │
+    │   System   │   │   System   │   │   Layer    │   │   Base     │
+    └────────────┘   └────────────┘   └────────────┘   └────────────┘
 ```
 
 ## Pipeline Flow
@@ -57,105 +142,202 @@ src/
 CVE-2024-XXXX
     │
     ▼
-┌─────────────────────┐
-│ 1. Info Collection  │  ChromiumCVEProcessor
-│    - NVD API        │  → CVEInfo, patches
-│    - Chromium Git   │
-└─────────┬───────────┘
-          │
-          ▼
-┌─────────────────────┐
-│ 2. Patch Analysis   │  PatchAnalyzer agent
-│    - Understand fix │  → vulnerability_type, trigger_conditions
-│    - Root cause     │
-└─────────┬───────────┘
-          │
-          ▼
-┌─────────────────────┐
-│ 3. PoC Generation   │  PoCGenerator agent (with tools)
-│    - Create HTML/JS │  → poc.html
-│    - Test & iterate │
-└─────────┬───────────┘
-          │
-          ▼
-┌─────────────────────┐
-│ 4. Verification     │  CrashVerifier agent
-│    - Run PoC        │  → crash confirmed / not
-│    - Check repro    │
-└─────────────────────┘
+┌─────────────────────────────────┐
+│ 1. Intel Collection             │  IntelCollector
+│    - NVD API (CVE details)      │  → CVEInfo with patches
+│    - Gitiles (patch diffs)      │
+│    - GitHub (existing PoCs)     │
+└─────────────┬───────────────────┘
+              │
+              ▼
+┌─────────────────────────────────┐
+│ 2. Patch Analysis               │  AnalyzerAgent + Plugins
+│    - Identify vulnerability     │  → AnalysisResult
+│    - Determine root cause       │
+│    - Suggest PoC strategy       │  Critic reviews output
+└─────────────┬───────────────────┘
+              │
+              ▼
+┌─────────────────────────────────┐
+│ 3. PoC Generation               │  GeneratorAgent + Plugins
+│    - Generate JS/HTML PoC       │  → PoCResult
+│    - Iterate based on feedback  │
+│    - Use similar cases          │  Critic reviews output
+└─────────────┬───────────────────┘
+              │
+              ▼
+┌─────────────────────────────────┐
+│ 4. Verification                 │  VerifierAgent + Plugins
+│    - Run in d8 or Chrome        │  → VerifyResult
+│    - Detect crash/ASAN          │
+│    - Check reproducibility      │  Critic reviews output
+└─────────────┬───────────────────┘
+              │
+              ▼
+┌─────────────────────────────────┐
+│ 5. Learning                     │  LearningEngine
+│    - Store case in memory       │
+│    - Extract successful         │
+│      strategies                 │
+└─────────────────────────────────┘
 ```
 
 ## Key Components
 
-### Tools
+### CLI Options
 
-```python
-# Chromium tools
-fetch_chromium_commit(hash)      # Get patch diff
-fetch_chromium_file(path, hash)  # Get source file
-analyze_patch_components(hash)   # Detect V8/Blink/etc
+```bash
+python main.py --cve CVE-2024-XXXX [OPTIONS]
 
-# Chrome tools
-download_chrome_version(ver)     # Download specific version
-run_chrome_with_poc(chrome, poc) # Run and detect crash
-test_poc_reproducibility(...)    # Multiple runs
-
-# Common
-read_file, write_file, run_command
+Options:
+  --config PATH                Custom config file
+  --output PATH                Output directory
+  --chrome-path PATH           Chrome executable path
+  --d8-path PATH               d8 executable path
+  --verbose, -v                Verbose output
+  --debug                      Debug logging
+  --list-stages                Show pipeline stages
 ```
 
-### Creating New Agents
+### Plugin System
 
 ```python
-from browser.agents.base import BrowserCVEAgent, XMLOutputParser
+# Creating a custom analyzer plugin
+from browser.plugins.base import AnalyzerPlugin
 
-class MyAgent(BrowserCVEAgent):
-    __LLM_MODEL__ = 'gpt-4o'
-    __SYSTEM_PROMPT_TEMPLATE__ = 'my_agent/system.j2'
-    __USER_PROMPT_TEMPLATE__ = 'my_agent/user.j2'
-    __OUTPUT_PARSER__ = MyParser
+class MyAnalyzer(AnalyzerPlugin):
+    NAME = "my-analyzer"
+    SUPPORTED_COMPONENTS = ["my-component"]
+    SUPPORTED_VULN_TYPES = ["type-confusion"]
+
+    def analyze(self, cve_info, patches, context):
+        # Analyze patches
+        return AnalysisResult(
+            vulnerability_type="type-confusion",
+            root_cause="...",
+            poc_strategy="..."
+        )
+
+# Register plugin
+from browser.plugins import PluginRegistry
+registry = PluginRegistry()
+registry.register(MyAnalyzer())
 ```
 
-### Output Format
+### Memory System
 
-Agents use XML-tagged output:
-```xml
-<vulnerability_type>Type Confusion</vulnerability_type>
-<root_cause>Missing type check in...</root_cause>
+```python
+from browser.memory import initialize_knowledge, EpisodeMemory
+
+# Load all knowledge
+semantic = initialize_knowledge()
+
+# Get component knowledge
+v8_knowledge = semantic.get_component_knowledge("v8")
+
+# Get vulnerability patterns
+uaf_patterns = semantic.get_vuln_knowledge("use-after-free")
+
+# Store successful case
+episode = EpisodeMemory()
+episode.store_case(cve_case)
+
+# Find similar cases
+similar = episode.find_similar_cases(cve_id, component, vuln_type)
+```
+
+### Execution Tools
+
+```python
+from browser.tools import D8Executor, ChromeExecutor, CrashAnalyzer
+
+# Execute in d8
+d8 = D8Executor("/path/to/d8")
+result = d8.execute("let x = 1;", timeout=30)
+print(result.crashed, result.asan_report)
+
+# Analyze crash
+analyzer = CrashAnalyzer()
+report = analyzer.analyze(result.stderr)
+print(analyzer.get_summary(report))
+print(analyzer.is_exploitable(report))
+```
+
+## Configuration
+
+Create `config.yaml`:
+
+```yaml
+general:
+  output_dir: ./output
+  log_level: INFO
+
+llm:
+  default_model: gpt-4o
+  temperature: 0.0
+  max_retries: 3
+
+intel:
+  nvd_api_key: ${NVD_API_KEY}
+  github_token: ${GITHUB_TOKEN}
+
+execution:
+  chrome_path: /path/to/chrome
+  d8_path: /path/to/d8
+  timeout: 60
+
+memory:
+  storage_path: ./volumes/memory
+
+agents:
+  max_retries: 3
+  critic_enabled: true
 ```
 
 ## Output Files
 
 After running, check `./output/<CVE-ID>/`:
-- `cve_info.json` - Raw CVE data
-- `cve_knowledge.md` - Formatted for LLM
-- `vulnerability_analysis.json` - Patch analysis result
-- `poc.html` - Generated PoC
-- `verification.json` - Crash verification result
+- `cve_info.json` - Collected CVE information
+- `cve_knowledge.md` - Formatted knowledge for LLM
+- `vulnerability_analysis.json` - Analysis results
+- `poc.js` or `poc.html` - Generated PoC
+- `verification.json` - Verification results
 - `results.json` - Full pipeline results
+- `pipeline.log` - Execution log (with --debug)
 
 ## Development
 
-### Adding a new tool
+### Adding a New Component Knowledge Base
 
 ```python
-# In src/browser/tools/my_tools.py
-from agentlib.lib import tools
+# In browser/knowledge/new_component.py
+NEW_COMPONENT_OVERVIEW = """
+Component overview text...
+"""
 
-@tools.tool
-def my_tool(param: str) -> str:
-    """Tool description for LLM."""
-    return result
+NEW_COMPONENT_VULNERABILITY_PATTERNS = """
+Common vulnerability patterns...
+"""
 
-# Add to __init__.py exports
+# Update browser/knowledge/__init__.py
 ```
 
-### Adding external service (e.g., CodeQL)
+### Adding a New Intel Source
 
 ```python
-# In src/browser/services/codeql.py
-class CodeQLService:
-    def query(self, repo_path: str, query: str) -> str:
-        # Run CodeQL and return results
-        pass
+# In browser/intel/sources.py
+class NewSource(IntelSource):
+    NAME = "new-source"
+    TIER = 2
+
+    def collect(self, cve_id: str) -> IntelResult:
+        # Fetch data from source
+        return IntelResult(source=self.NAME, data=data)
+```
+
+### Running Tests
+
+```bash
+cd src/browser
+python -m pytest tests/
 ```

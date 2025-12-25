@@ -1,6 +1,32 @@
 # Browser CVE Agents
+#
+# Multi-agent system for CVE reproduction.
 
 from .base import BrowserCVEAgent, BrowserCVEAgentWithTools, XMLOutputParser
-from .patch_analyzer import PatchAnalyzer
-from .poc_generator import PoCGenerator
-from .crash_verifier import CrashVerifier
+
+from .multi import (
+    BaseReproAgent,
+    AgentMessage,
+    AgentState,
+    OrchestratorAgent,
+    AnalyzerAgent,
+    GeneratorAgent,
+    VerifierAgent,
+    CriticAgent,
+)
+
+__all__ = [
+    # Base classes
+    'BrowserCVEAgent',
+    'BrowserCVEAgentWithTools',
+    'XMLOutputParser',
+    # Multi-agent system
+    'BaseReproAgent',
+    'AgentMessage',
+    'AgentState',
+    'OrchestratorAgent',
+    'AnalyzerAgent',
+    'GeneratorAgent',
+    'VerifierAgent',
+    'CriticAgent',
+]

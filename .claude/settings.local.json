@@ -3,7 +3,10 @@
     "allow": [
       "Bash(rm:*)",
       "Bash(python -m py_compile:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(dir /s /b)",
+      "WebSearch",
+      "Bash(dir:*)"
     ]
   }
 }

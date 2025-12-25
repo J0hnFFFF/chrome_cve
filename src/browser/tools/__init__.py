@@ -28,6 +28,22 @@ from .common_tools import (
     file_exists,
 )
 
+from .execution import (
+    ExecutionResult,
+    D8Executor,
+    ChromeExecutor,
+    MultiVersionTester,
+)
+
+from .debug import (
+    ASANError,
+    StackFrame,
+    CrashReport,
+    ASANParser,
+    StackTraceParser,
+    CrashAnalyzer,
+)
+
 from .analysis_tools import (
     # CodeQL tools
     codeql_find_function_calls,
@@ -94,6 +110,20 @@ EXECUTION_TOOLS = [
     run_chrome_with_poc,
     test_poc_reproducibility,
     analyze_crash_log,
+]
+
+# Executor classes for programmatic use
+EXECUTOR_CLASSES = [
+    D8Executor,
+    ChromeExecutor,
+    MultiVersionTester,
+]
+
+# Debug/analysis classes
+DEBUG_CLASSES = [
+    ASANParser,
+    StackTraceParser,
+    CrashAnalyzer,
 ]
 
 ALL_TOOLS = (

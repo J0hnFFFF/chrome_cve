@@ -44,20 +44,46 @@ def fetch_chromium_file(file_path: str, commit_hash: str = "main", repo: str = "
     """
     Fetch a specific file from Chromium source at a given commit.
 
-    :param file_path: Path to file in the repository (e.g., v8/src/compiler/js-call-reducer.cc)
+    :param file_path: Path to file in the repository (e.g., src/compiler/js-call-reducer.cc for V8)
     :param commit_hash: Commit hash or branch name (default: main)
-    :param repo: Repository path
+    :param repo: Repository path (chromium/src or v8/v8)
     :return: File content
     """
-    url = f"{CHROMIUM_GITILES}/{repo}/+/{commit_hash}/{file_path}?format=TEXT"
+    # Auto-detect and fix V8 paths
+    # If path starts with v8/, use v8/v8 repo and strip the prefix
+    actual_repo = repo
+    actual_path = file_path
+
+    if file_path.startswith("v8/"):
+        actual_repo = "v8/v8"
+        actual_path = file_path[3:]  # Strip "v8/" prefix
+        print(f"    [Tool] Auto-corrected: repo={actual_repo}, path={actual_path}")
+
+    # Use HEAD for default if main doesn't work
+    actual_commit = commit_hash
+    if commit_hash == "main" and actual_repo == "v8/v8":
+        # V8 uses "main" branch, but let's try HEAD first
+        actual_commit = "HEAD"
+
+    # Try fetching the file
+    url = f"{CHROMIUM_GITILES}/{actual_repo}/+/{actual_commit}/{actual_path}?format=TEXT"
 
     try:
         response = requests.get(url, timeout=30)
         if response.status_code == 200:
             content = base64.b64decode(response.content).decode('utf-8', errors='ignore')
             return content
+        elif response.status_code == 404 and actual_repo == "v8/v8":
+            # Try with chromium/src if v8/v8 failed
+            fallback_url = f"{CHROMIUM_GITILES}/chromium/src/+/{commit_hash}/{file_path}?format=TEXT"
+            print(f"    [Tool] Trying fallback: chromium/src/{file_path}")
+            response = requests.get(fallback_url, timeout=30)
+            if response.status_code == 200:
+                content = base64.b64decode(response.content).decode('utf-8', errors='ignore')
+                return content
+            return f"Error: File not found in v8/v8 or chromium/src: {file_path}"
         else:
-            return f"Error: Failed to fetch file {file_path}, status={response.status_code}"
+            return f"Error: Failed to fetch file {actual_path} from {actual_repo}, status={response.status_code}"
     except Exception as e:
         return f"Error: {str(e)}"
 
