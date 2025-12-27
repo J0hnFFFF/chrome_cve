@@ -173,6 +173,13 @@ class CVEReproductionPipeline:
             "anthropic_base_url": self.settings.llm.anthropic_base_url or os.environ.get("ANTHROPIC_BASE_URL", ""),
         }
 
+        # Validate keys
+        if not llm_config["openai_api_key"] and not llm_config["anthropic_api_key"]:
+            raise ValueError(
+                "No LLM API keys found! System requires LLM configuration via environment variables.\n"
+                "Please set OPENAI_API_KEY or ANTHROPIC_API_KEY."
+            )
+
         # Determine backend based on available keys
         if llm_config.get("anthropic_api_key"):
             backend = "anthropic"
@@ -313,8 +320,63 @@ class CVEReproductionPipeline:
             if not cve_info:
                 return self._failure("Intel collection failed")
 
-            # Stage 2-4: Run multi-agent pipeline
-            print("\n[Stage 2-4] Multi-Agent Pipeline")
+            # Stage 2: Environment Setup (Download or Build)
+            print("\n[Stage 2] Environment Setup")
+            
+            # Identify target version/commit
+            target_commit = self.commit
+            target_version = None
+            
+            # If we collected intel, try to get version from it
+            if cve_info and not target_commit:
+                # Naive attempt to find a version (this logic would need to be more robust in prod)
+                # For now, let's assume we rely on what the agents determine, 
+                # but we can try to pre-fetch if we have a commit hash from patches
+                if hasattr(cve_info, 'patches') and cve_info.patches:
+                    target_commit = cve_info.patches[0].get('commit_hash')
+
+            d8_path = self.settings.execution.d8_path
+            chrome_path = self.settings.execution.chrome_path
+            
+            # Hybrid Workflow Logic
+            if self.settings.build.mode in ["hybrid", "local_windows"]:
+                from .tools.build_manager import WindowsBuildManager
+                build_manager = WindowsBuildManager(self.settings)
+
+                # Skip download if pure local mode
+                download_success = False
+                if self.settings.build.mode == "hybrid" and target_commit:
+                    print(f"  [Hybrid] Attempting binary download first for {target_commit}...")
+                    # Try to map commit to version for download
+                    # This part is simplified; normally we map commit -> position -> download
+                    # For V8 bugs, we often need d8
+                    downloaded_d8 = self.chrome_downloader.download_version(target_commit) # Assuming downloader handles commit mapping or we add it
+                    if downloaded_d8:
+                        d8_path = downloaded_d8
+                        download_success = True
+                        print("  [Hybrid] Binary download successful.")
+                    else:
+                        print("  [Hybrid] Binary download failed or not found.")
+
+                # Fallback to build
+                if (not download_success and self.settings.build.auto_fallback) or self.settings.build.mode == "local_windows":
+                    print(f"  [{self.settings.build.mode.upper()}] Triggering local build...")
+                    if target_commit:
+                        print(f"  Building commit: {target_commit}")
+                        if build_manager.fetch_source(target="v8", version=target_commit):
+                            built_d8 = build_manager.build_target(target="d8", asan=self.settings.execution.asan_enabled)
+                            if built_d8:
+                                d8_path = built_d8
+                                print(f"  [Build] Success! d8 available at: {d8_path}")
+                            else:
+                                print("  [Build] Compilation failed.")
+                        else:
+                            print("  [Build] Source fetch failed.")
+                    else:
+                        print("  [Build] No specific commit identified to build. Skipping build stage.")
+
+            # Stage 3-5: Run multi-agent pipeline
+            print("\n[Stage 3-5] Multi-Agent Pipeline")
             print("  - Analysis (LLM + tools)")
             print("  - PoC Generation (LLM + templates)")
             print("  - Verification (execution + crash analysis)")
@@ -324,8 +386,8 @@ class CVEReproductionPipeline:
                 "cve_info": cve_info,
                 "patches": cve_info.get("patches", []) if isinstance(cve_info, dict) else getattr(cve_info, "patches", []),
                 "start_time": self.results["start_time"],
-                "chrome_path": self.settings.execution.chrome_path,
-                "d8_path": self.settings.execution.d8_path,
+                "chrome_path": chrome_path,
+                "d8_path": d8_path,
             })
 
             # Stage 5: Learning

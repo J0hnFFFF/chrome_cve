@@ -61,12 +61,22 @@ class GeneralConfig:
 
 
 @dataclass
+class BuildConfig:
+    """Build system configuration."""
+    mode: str = "lightweight"  # lightweight, local_windows, hybrid, docker
+    auto_fallback: bool = True
+    source_root: str = "D:/src"
+    msvc_path: str = ""
+
+
+@dataclass
 class Settings:
     """Complete application settings."""
     general: GeneralConfig = field(default_factory=GeneralConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     intel: IntelConfig = field(default_factory=IntelConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
+    build: BuildConfig = field(default_factory=BuildConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     agents: AgentConfig = field(default_factory=AgentConfig)
 
@@ -78,6 +88,7 @@ class Settings:
             llm=LLMConfig(**d.get("llm", {})),
             intel=IntelConfig(**d.get("intel", {})),
             execution=ExecutionConfig(**d.get("execution", {})),
+            build=BuildConfig(**d.get("build", {})),
             memory=MemoryConfig(**d.get("memory", {})),
             agents=AgentConfig(**d.get("agents", {})),
         )

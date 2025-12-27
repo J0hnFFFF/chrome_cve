@@ -132,6 +132,12 @@ class ConfigLoader:
                 "timeout": 60,
                 "asan_enabled": True,
             },
+            "build": {
+                "mode": "lightweight",
+                "auto_fallback": True,
+                "source_root": "D:/src",
+                "msvc_path": "",
+            },
             "memory": {
                 "storage_path": "./volumes/memory",
                 "vector_db_path": "./volumes/vectors",
