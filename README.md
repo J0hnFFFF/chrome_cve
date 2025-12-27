@@ -1,167 +1,124 @@
-# CLAUDE.md
+# Chrome CVE 复现框架
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+一个基于大语言模型的先进多智能体系统，用于自动化分析 Chrome/Chromium 漏洞并进行复现。该框架智能地分析补丁，理解漏洞，并通过协作式 AI 智能体生成漏洞概念验证（PoC）。
 
-## Project Overview
+## 🚀 概述
 
-Browser CVE Reproducer - An LLM-based multi-agent framework for Chrome/Chromium CVE reproduction. The system analyzes patches, understands vulnerabilities, and generates working PoCs.
+Chrome CVE 复现框架利用大语言模型（LLM）自动分析 Chrome/Chromium 漏洞。该系统不仅仅是简单的分析工具，它具备**混合工作流（Hybrid Workflow）**能力，既能快速利用预编译二进制验证，也能在需要时自动回退到本地全量编译。
 
-## Quick Start
+## 🛠️ 主要特性
+
+- **混合工作流 (New)**：智能决策引擎。优先尝试下载官方预编译二进制（快），失败或需要深度调试时自动触发本地编译（慢但强）。
+- **Windows 原生编译 (New)**：内置 PowerShell 自动化脚本，支持在 Windows 上全自动配置 `depot_tools`、拉取特定版本代码并编译带有 ASAN 的 `d8`。
+- **智能情报收集**：从 NVD、Gitiles 等多源收集漏洞信息。
+- **多智能体协作**：分析器、生成器、验证器和批评器协同工作。
+- **深度排错**：支持 AddressSanitizer (ASAN) 堆栈分析。
+
+## � 系统要求
+
+- **操作系统**: Windows 10/11 (x64)
+- **Python**: 3.9+
+- **构建环境 (仅本地编译模式需要)**:
+  - Visual Studio 2022 (Desktop C++, MFC, Windows SDK 10/11)
+  - 至少 100GB 空闲磁盘空间 (NTFS)
+
+## 🚀 快速开始
+
+### 1. 安装依赖
 
 ```bash
-# Install agentlib
 cd src/agentlib && pip install -e .
+```
 
-# Create .env with API key
-echo "OPENAI_API_KEY=sk-..." > src/browser/.env
+### 2. 配置环境 (Depot Tools)
 
-# Run
+如果您需要使用本地编译功能，请先运行自动化脚本配置环境：
+
+```powershell
+./src/scripts/win_setup_depot_tools.ps1
+```
+
+### 3. 配置系统
+
+复制配置文件模板：
+
+```bash
+cp src/browser/config.yaml.example src/browser/config.yaml
+```
+
+**[重要] 设置 API 密钥**
+出于安全考虑，系统**不再支持**在配置文件中明文存储 LLM 密钥。请使用环境变量：
+
+```powershell
+$env:OPENAI_API_KEY="sk-..."
+# 或者
+$env:ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+### 4. 运行复现
+
+```bash
 cd src/browser
-python main.py --cve CVE-2024-XXXX
+python -m browser.main --cve CVE-2024-XXXX
 ```
 
-## Project Structure
+系统将自动执行以下流程：
+1. 收集情报，锁定漏洞版本。
+2. 尝试下载预编译二进制。
+3. 如果下载失败，**自动下载源码并编译**。
+4. 分析漏洞并生成 PoC。
+5. 在复现环境中验证。
 
-```
-src/
-├── agentlib/                    # Core LLM agent framework (reused)
-│
-└── browser/                     # Browser CVE reproduction
-    ├── main.py                  # Entry point & pipeline orchestrator
-    │
-    ├── agents/                  # LLM Agents
-    │   ├── base.py              # Base classes & XMLOutputParser
-    │   ├── patch_analyzer.py    # Analyzes patches → vulnerability understanding
-    │   ├── poc_generator.py     # Generates HTML/JS PoC
-    │   └── crash_verifier.py    # Verifies crash reproducibility
-    │
-    ├── tools/                   # Agent tools
-    │   ├── chromium_tools.py    # Fetch patches, search code
-    │   ├── chrome_tools.py      # Download Chrome, run PoC, detect crash
-    │   └── common_tools.py      # File operations
-    │
-    ├── prompts/                 # Jinja2 templates
-    │   ├── patch_analyzer/
-    │   ├── poc_generator/
-    │   └── crash_verifier/
-    │
-    ├── data/                    # Data processors
-    │   └── cve_processor.py     # Fetch CVE info from NVD/Chromium
-    │
-    └── services/                # External services (future: CodeQL, Ghidra)
+## ⚙️ 配置文件 (config.yaml)
+
+```yaml
+general:
+  output_dir: "./output"
+
+# 情报收集设置
+intel:
+  nvd_api_key: "your-nvd-key"  # 可选，用于提高限额
+
+# 构建系统设置 (新功能)
+build:
+  mode: "hybrid"           # 推荐: "hybrid" (混合模式), 可选: "local_windows" (强制本地), "lightweight" (仅下载)
+  auto_fallback: true      # 下载失败自动切换到编译
+  source_root: "D:/src"    # 源码存放路径
+  msvc_path: "C:/Program Files/Microsoft Visual Studio/2022/Community"
+
+# 执行设置
+execution:
+  timeout: 60
+  asan_enabled: true       # 启用内存检测
 ```
 
-## Pipeline Flow
+## 🧠 架构与流程
 
 ```
 CVE-2024-XXXX
     │
     ▼
-┌─────────────────────┐
-│ 1. Info Collection  │  ChromiumCVEProcessor
-│    - NVD API        │  → CVEInfo, patches
-│    - Chromium Git   │
-└─────────┬───────────┘
-          │
-          ▼
-┌─────────────────────┐
-│ 2. Patch Analysis   │  PatchAnalyzer agent
-│    - Understand fix │  → vulnerability_type, trigger_conditions
-│    - Root cause     │
-└─────────┬───────────┘
-          │
-          ▼
-┌─────────────────────┐
-│ 3. PoC Generation   │  PoCGenerator agent (with tools)
-│    - Create HTML/JS │  → poc.html
-│    - Test & iterate │
-└─────────┬───────────┘
-          │
-          ▼
-┌─────────────────────┐
-│ 4. Verification     │  CrashVerifier agent
-│    - Run PoC        │  → crash confirmed / not
-│    - Check repro    │
-└─────────────────────┘
+[ 智能决策层 ] ──(下载二进制)──► [ 快速验证环境 ]
+    │ (失败/需要深度分析)
+    ▼
+[ 本地构建层 ] ──(自动编译)───► [ ASAN 调试环境 ]
+    │
+    ▼
+[ 多智能体核心 ]
+    ├── 分析器 (Analyzer): 读懂补丁，找根因
+    ├── 生成器 (Generator): 写 PoC
+    └── 验证器 (Verifier): 跑 PoC，看崩没崩
 ```
 
-## Key Components
+## 📊 输出结果
 
-### Tools
+运行结束后，检查 `./output/<CVE-ID>/` 目录：
+- `cve_info.json`: 漏洞情报
+- `poc.js`: 生成的漏洞利用代码
+- `verification.json`: 验证结果（包含 ASAN 报告）
+- `results.json`: 完整执行报告
 
-```python
-# Chromium tools
-fetch_chromium_commit(hash)      # Get patch diff
-fetch_chromium_file(path, hash)  # Get source file
-analyze_patch_components(hash)   # Detect V8/Blink/etc
+## 🤝 贡献与支持
 
-# Chrome tools
-download_chrome_version(ver)     # Download specific version
-run_chrome_with_poc(chrome, poc) # Run and detect crash
-test_poc_reproducibility(...)    # Multiple runs
-
-# Common
-read_file, write_file, run_command
-```
-
-### Creating New Agents
-
-```python
-from browser.agents.base import BrowserCVEAgent, XMLOutputParser
-
-class MyAgent(BrowserCVEAgent):
-    __LLM_MODEL__ = 'gpt-4o'
-    __SYSTEM_PROMPT_TEMPLATE__ = 'my_agent/system.j2'
-    __USER_PROMPT_TEMPLATE__ = 'my_agent/user.j2'
-    __OUTPUT_PARSER__ = MyParser
-```
-
-### Output Format
-
-Agents use XML-tagged output:
-```xml
-<vulnerability_type>Type Confusion</vulnerability_type>
-<root_cause>Missing type check in...</root_cause>
-```
-
-## Output Files
-
-After running, check `./output/<CVE-ID>/`:
-- `cve_info.json` - Raw CVE data
-- `cve_knowledge.md` - Formatted for LLM
-- `vulnerability_analysis.json` - Patch analysis result
-- `poc.html` - Generated PoC
-- `verification.json` - Crash verification result
-- `results.json` - Full pipeline results
-
-## Development
-
-### Adding a new tool
-
-```python
-# In src/browser/tools/my_tools.py
-from agentlib.lib import tools
-
-@tools.tool
-def my_tool(param: str) -> str:
-    """Tool description for LLM."""
-    return result
-
-# Add to __init__.py exports
-```
-
-### Adding external service (e.g., CodeQL)
-
-```python
-# In src/browser/services/codeql.py
-class CodeQLService:
-    def query(self, repo_path: str, query: str) -> str:
-        # Run CodeQL and return results
-        pass
-```
-
-set OPENAI_API_KEY=sk-xxx
-set OPENAI_BASE_URL=http://your-proxy:8000/v1
-set LLM_MODEL=your-model-name
-
-python -m browser.main --cve CVE-2025-6554 --verbose
+如遇问题，请提交 Issue。
+由于涉及本地编译，请确保您的 Windows 环境满足 Visual Studio 的相关要求。
