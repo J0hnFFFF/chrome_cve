@@ -163,3 +163,5 @@ class CodeQLService:
 set OPENAI_API_KEY=sk-xxx
 set OPENAI_BASE_URL=http://your-proxy:8000/v1
 set LLM_MODEL=your-model-name
+
+python -m browser.main --cve CVE-2025-6554 --verbose

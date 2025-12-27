@@ -431,7 +431,7 @@ class OrchestratorAgent(BaseReproAgent):
 
         # Also store in episode memory directly
         if self._episode_memory:
-            self._episode_memory.add_case(case)
+            self._episode_memory.save(case)
 
     def _create_success_result(
         self,
