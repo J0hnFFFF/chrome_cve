@@ -2,10 +2,11 @@
 V8 Analyzer Plugin
 
 Specialized analyzer for V8 JavaScript engine vulnerabilities.
+Enhanced with DeepPatchAnalyzer for LLM-based semantic analysis.
 """
 
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from ..base import AnalyzerPlugin, AnalysisResult
 
 
@@ -19,11 +20,13 @@ class V8AnalyzerPlugin(AnalyzerPlugin):
     - Bounds check elimination
     - GC-related issues
     - WebAssembly vulnerabilities
+    
+    Enhanced with DeepPatchAnalyzer for semantic understanding.
     """
 
     name = "v8_analyzer"
-    version = "1.0.0"
-    description = "Analyzer for V8 JavaScript engine vulnerabilities"
+    version = "2.0.0"  # Upgraded with DeepPatchAnalyzer
+    description = "Analyzer for V8 JavaScript engine vulnerabilities with LLM support"
     supported_components = ["v8", "javascript", "jit", "turbofan", "maglev", "wasm"]
     supported_vuln_types = [
         "type-confusion",
@@ -62,6 +65,24 @@ class V8AnalyzerPlugin(AnalyzerPlugin):
         r"GCTracer",
         r"EmbedderHeapTracer",
     ]
+    
+    def __init__(self, llm_service=None):
+        """
+        Initialize V8 analyzer.
+        
+        Args:
+            llm_service: Optional LLM service for deep analysis
+        """
+        super().__init__()
+        self._deep_analyzer = None
+        
+        # Initialize DeepPatchAnalyzer if LLM available
+        if llm_service:
+            try:
+                from ...tools.deep_patch_analyzer import DeepPatchAnalyzer
+                self._deep_analyzer = DeepPatchAnalyzer(llm_service)
+            except ImportError:
+                pass  # Fallback to heuristic analysis
 
     def analyze(
         self,
@@ -69,8 +90,40 @@ class V8AnalyzerPlugin(AnalyzerPlugin):
         cve_info: Dict[str, Any],
         knowledge: str = ""
     ) -> AnalysisResult:
-        """Analyze V8 patch and extract vulnerability information."""
-
+        """
+        Analyze V8 patch and extract vulnerability information.
+        
+        Enhanced to use DeepPatchAnalyzer when available.
+        """
+        
+        # Try deep analysis first
+        if self._deep_analyzer:
+            try:
+                deep_analysis = self._deep_analyzer.analyze_patch(
+                    patch_diff=patch_diff,
+                    commit_message=cve_info.get("commit_message", ""),
+                    files_changed=cve_info.get("files_changed", []),
+                    cve_info=cve_info
+                )
+                
+                # Convert DeepPatchAnalysis to AnalysisResult
+                return AnalysisResult(
+                    vulnerability_type=deep_analysis.vuln_type,
+                    component="V8",
+                    root_cause=deep_analysis.root_cause,
+                    trigger_conditions=deep_analysis.preconditions,
+                    trigger_approach=", ".join(deep_analysis.api_path),
+                    poc_strategy=self._format_poc_strategy(deep_analysis.poc_strategy),
+                    confidence=deep_analysis.confidence,
+                    affected_functions=deep_analysis.api_path,
+                    patch_summary=deep_analysis.fix_description,
+                    exploitation_difficulty=self._assess_difficulty(deep_analysis.vuln_type),
+                )
+            except Exception as e:
+                # Fallback to heuristic analysis
+                print(f"  [V8Analyzer] Deep analysis failed, using heuristics: {e}")
+        
+        # Heuristic analysis (original logic)
         # Detect vulnerability type
         vuln_type = self._detect_vuln_type(patch_diff, cve_info)
 
@@ -284,3 +337,27 @@ class V8AnalyzerPlugin(AnalyzerPlugin):
             "integer-overflow": "medium",
         }
         return difficulties.get(vuln_type, "medium")
+    
+    def _format_poc_strategy(self, poc_strategy: Dict[str, str]) -> str:
+        """
+        Format PoC strategy from DeepPatchAnalysis to string.
+        
+        Args:
+            poc_strategy: Dictionary with setup, trigger, verification
+            
+        Returns:
+            Formatted strategy string
+        """
+        parts = []
+        
+        if poc_strategy.get("setup"):
+            parts.append(f"Setup: {poc_strategy['setup']}")
+        
+        if poc_strategy.get("trigger"):
+            parts.append(f"Trigger: {poc_strategy['trigger']}")
+        
+        if poc_strategy.get("verification"):
+            parts.append(f"Verification: {poc_strategy['verification']}")
+        
+        return " | ".join(parts) if parts else "See deep analysis"
+```

@@ -28,6 +28,27 @@ from .blink_knowledge import (
     get_blink_exploitation_knowledge,
 )
 
+"""
+Knowledge Module
+
+Dynamic knowledge extraction and management (Phase 5.1).
+"""
+
+from .dynamic_builder import (
+    DynamicKnowledgeBuilder,
+    KnowledgeContext,
+)
+
+from .cve_similarity import (
+    CVESimilarityFinder,
+)
+
+__all__ = [
+    "DynamicKnowledgeBuilder",
+    "KnowledgeContext",
+    "CVESimilarityFinder",
+]
+
 from .skia_knowledge import (
     SKIA_OVERVIEW,
     SKIA_IMAGE_DECODING,

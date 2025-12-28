@@ -106,6 +106,19 @@ class IntelCollector:
 
         for repo, commit in commit_hashes:
             result = gitiles.collect_commit(repo, commit)
+            
+            # --- New Feature: Regression Test Crawler ---
+            from ..tools.chromium_tools import fetch_associated_tests
+            print(f"  Crawler: Scanning commit {commit} for regression tests...")
+            tests_data = fetch_associated_tests.func(commit, repo)
+            if tests_data and not tests_data.startswith("No regression tests"):
+                print(f"    ✓ Found relevant test files")
+                # Attach to the result using a custom field
+                # IntelResult data is a bit rigid, so we add it to the internal dictionary
+                if result.success and isinstance(result.data, dict):
+                    result.data['regression_tests'] = tests_data
+            # --------------------------------------------
+            
             results.append(result)
 
         return results
@@ -128,75 +141,64 @@ class IntelCollector:
         # Collect from all sources
         results = self.collect(cve_id, tier_limit)
 
-        # Extract commit hashes from NVD references
+        # Extract commit hashes from NVD references using new structured data
         nvd_result = results.get("nvd")
         patches = []
+        
         if nvd_result and nvd_result.success:
-            import re
-            refs = nvd_result.data.get("references", [])
-            description = nvd_result.data.get("description", "")
-
-            # Patterns for Chromium commit URLs
-            patterns = [
-                # Standard gitiles: chromium.googlesource.com/repo/+/hash
-                r'chromium\.googlesource\.com/([^/]+(?:/[^/]+)?)/\+/([a-f0-9]{7,40})',
-                # Chromium review: chromium-review.googlesource.com/c/repo/+/change
-                r'chromium-review\.googlesource\.com/c/([^/]+(?:/[^/]+)?)/\+/(\d+)',
-                # Chrome release blog with commit reference
-                r'chromereleases\.googleblog\.com.*?([a-f0-9]{40})',
-                # Direct git hash in URL
-                r'/([a-f0-9]{40})(?:[/?#]|$)',
-            ]
-
-            all_text = " ".join(refs) + " " + description
-
-            # Debug: show references
-            if refs:
-                print(f"  NVD references ({len(refs)}):")
-                for ref in refs[:5]:  # Show first 5
-                    print(f"    - {ref[:80]}...")
-
-            # Also extract bug IDs and fetch from bug tracker
+            chromium_refs = nvd_result.data.get("chromium_refs", {})
+            
+            # Show what we found
+            print(f"\n  📊 Chromium References Found:")
+            print(f"    Bug IDs: {len(chromium_refs.get('bug_ids', []))}")
+            print(f"    Commits: {len(chromium_refs.get('commits', []))}")
+            print(f"    Repositories: {chromium_refs.get('repositories', [])}")
+            print(f"    Release Notes: {len(chromium_refs.get('release_notes', []))}")
+            
+            # 1. Add commits directly from NVD references
+            for commit_info in chromium_refs.get("commits", []):
+                repo = commit_info["repository"]
+                commit_hash = commit_info["hash"]
+                patches.append((repo, commit_hash))
+                print(f"    ✓ Direct commit: {repo}/{commit_hash[:12]}")
+            
+            # 2. Fetch commits from Bug Tracker
             bug_tracker = ChromiumBugTrackerSource()
-            for ref in refs:
-                # Match issues.chromium.org/issues/{id}
-                bug_match = re.search(r'issues\.chromium\.org/issues/(\d+)', ref)
-                if bug_match:
-                    bug_id = bug_match.group(1)
-                    print(f"  Fetching bug tracker issue {bug_id}...")
-                    bug_result = bug_tracker.collect_bug(bug_id)
-                    if bug_result.success and bug_result.data.get("commits"):
-                        for commit in bug_result.data["commits"]:
-                            patches.append(("chromium/src", commit))
-                        print(f"    Found {len(bug_result.data['commits'])} commit(s) in bug {bug_id}")
-                    results["bug_tracker"] = bug_result
-
-            for pattern in patterns:
-                for match in re.finditer(pattern, all_text):
-                    if len(match.groups()) >= 2:
-                        repo = match.group(1)
-                        commit = match.group(2)
-                        # Default repo if not specified
-                        if not '/' in repo:
-                            repo = f"chromium/src"
+            for bug_id in chromium_refs.get("bug_ids", []):
+                print(f"  🔍 Fetching bug tracker issue {bug_id}...")
+                bug_result = bug_tracker.collect_bug(bug_id)
+                
+                if bug_result.success and bug_result.data.get("commits"):
+                    commits_found = bug_result.data["commits"]
+                    for commit in commits_found:
+                        # Determine repository (default to chromium/src)
+                        repo = "chromium/src"
+                        # If we have repository info from NVD, use it
+                        if chromium_refs.get("repositories"):
+                            repo = chromium_refs["repositories"][0]
                         patches.append((repo, commit))
-                    elif len(match.groups()) == 1:
-                        # Just hash, assume chromium/src
-                        patches.append(("chromium/src", match.group(1)))
+                    print(f"    ✓ Found {len(commits_found)} commit(s) in bug {bug_id}")
+                    results["bug_tracker"] = bug_result
+                else:
+                    print(f"    ✗ No commits found in bug {bug_id}")
 
-            # Deduplicate
+            # Deduplicate patches
             patches = list(set(patches))
-
+            
             if patches:
-                print(f"  Found {len(patches)} commit(s) in NVD references")
+                print(f"\n  📦 Total unique commits to fetch: {len(patches)}")
+            else:
+                print(f"\n  ⚠️  No commits found in NVD references or bug tracker")
 
         # Collect patches
         if patches:
             patch_results = self.collect_patches(patches)
             for i, pr in enumerate(patch_results):
                 results[f"patch_{i}"] = pr
-        else:
-            print("  No commit hashes found in NVD references")
+                if pr.success:
+                    files_changed = len(pr.data.get("files_changed", []))
+                    print(f"    ✓ Patch {i}: {files_changed} files changed")
 
         # Fuse all results
+        print(f"\n  🔗 Fusing intelligence from {len(results)} sources...")
         return self.fusion.fuse(cve_id, results)

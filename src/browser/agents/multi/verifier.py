@@ -13,6 +13,7 @@ from .base import BaseReproAgent, AgentMessage, AgentState
 from ...plugins import get_registry, PoCResult, VerifyResult
 from ...tools.execution import D8Executor, ChromeExecutor, ExecutionResult
 from ...tools.debug import CrashAnalyzer
+from ...tools.environment_manager import EnvironmentManager  # NEW
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class VerifierAgent(BaseReproAgent):
     - D8Executor/ChromeExecutor for execution
     - CrashAnalyzer for crash parsing
     - LLMService for intelligent analysis
+    - EnvironmentManager for auto-detection (NEW)
     """
 
     name = "verifier"
@@ -38,8 +40,26 @@ class VerifierAgent(BaseReproAgent):
 
     def __init__(self, config: Dict[str, Any] = None):
         super().__init__(config)
+        
+        # NEW: Initialize EnvironmentManager
+        self._env_manager = EnvironmentManager(config)
+        
+        # Try to get paths from config first
         self.chrome_path = config.get("chrome_path") if config else None
         self.d8_path = config.get("d8_path") if config else None
+        
+        # NEW: If not in config, try auto-detection
+        if not self.chrome_path and not self.d8_path:
+            logger.info("No binary paths in config, attempting auto-detection...")
+            default_env = self._env_manager.get_default_env()
+            
+            if default_env.is_valid():
+                self.d8_path = default_env.d8_path
+                self.chrome_path = default_env.chrome_path
+                logger.info(f"✓ Auto-detected: d8={self.d8_path}, chrome={self.chrome_path}")
+            else:
+                logger.warning("⚠️  No binaries found via auto-detection")
+        
         self.timeout = config.get("timeout", 30) if config else 30
         self.num_runs = config.get("num_runs", 3) if config else 3
         self._crash_analyzer = CrashAnalyzer()

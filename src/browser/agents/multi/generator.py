@@ -12,6 +12,8 @@ from typing import Dict, Any, Optional, List
 from .base import BaseReproAgent, AgentMessage, AgentState
 from ...plugins import get_registry, AnalysisResult, PoCResult
 from ...memory import SemanticMemory, EpisodeMemory
+from ...tools.regression_test_analyzer import RegressionTestAnalyzer
+from ...tools.poc_template_library import PoCTemplateLibrary # NEW
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,16 @@ class GeneratorAgent(BaseReproAgent):
         self.semantic_memory: Optional[SemanticMemory] = None
         self.episode_memory: Optional[EpisodeMemory] = None
         self.max_iterations = 3
+        self._regression_analyzer = RegressionTestAnalyzer()
+
+        # NEW: Initialize template library
+        self._template_library: Optional[PoCTemplateLibrary] = None
+        try:
+            self._template_library = PoCTemplateLibrary()
+            logger.info(f"Loaded {len(self._template_library.list_templates())} PoC templates")
+        except ImportError:
+            logger.warning("PoCTemplateLibrary not available. Template-based generation will be skipped.")
+
 
     def set_memory(
         self,
@@ -145,11 +157,32 @@ class GeneratorAgent(BaseReproAgent):
         analysis: AnalysisResult,
         cve_info: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Generate PoC using LLM."""
+        """
+        Generate PoC using LLM.
+        
+        Priority:
+        1. Regression test extraction
+        2. Template-based generation (Phase 3.1)
+        3. LLM generation (fallback)
+        """
         cve_id = cve_info.get('cve_id', 'unknown')
         print(f"  [Generator] Generating PoC for {cve_id} with LLM...")
         print(f"  [Generator] Component: {analysis.component}, Type: {analysis.vulnerability_type}")
         logger.info(f"Generating PoC with LLM for {cve_id}")
+
+        # Priority 1: Check for regression tests in patches first
+        regression_poc = self._try_extract_regression_test(cve_info)
+        if regression_poc:
+            print(f"  [Generator] ✓ Found regression test! Using as PoC template")
+            # Still use LLM to enhance/explain the test
+            return self._enhance_regression_test_with_llm(regression_poc, analysis, cve_id)
+        
+        # Priority 2: Try template-based generation (Phase 3.1)
+        if self._template_library:
+            template_poc = self._try_template_generation(analysis, cve_info)
+            if template_poc:
+                print(f"  [Generator] ✓ Generated PoC from template")
+                return template_poc
 
         # Prepare context from similar cases
         similar_code_examples = self._get_similar_examples(analysis)
@@ -432,9 +465,110 @@ poc();
 
         return {
             "code": code,
-            "language": "javascript",
-            "target_version": "",
-            "expected_behavior": "Crash or unexpected behavior",
-            "success": False,
-            "notes": ["Basic template, needs refinement"],
+            "language": language,
+            "confidence": 0.7,
+            "description": f"Generated PoC for {analysis.vulnerability_type}",
         }
+
+    def _try_extract_regression_test(self, cve_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Try to extract regression test from patch.
+        
+        Args:
+            cve_info: CVE information including patches
+            
+        Returns:
+            PoC dict from regression test, or None
+        """
+        patches = cve_info.get("patches", [])
+        
+        if not patches:
+            return None
+        
+        # Try each patch
+        for patch in patches:
+            patch_diff = patch.get("diff_content", "")
+            if not patch_diff:
+                continue
+            
+            # Extract regression tests
+            test_cases = self._regression_analyzer.extract_from_patch(
+                patch_diff,
+                patch
+            )
+            
+            if test_cases:
+                # Use the first regression test found
+                test_case = test_cases[0]
+                logger.info(f"Found regression test: {test_case.test_name}")
+                print(f"    ✓ Found regression test: {test_case.test_name}")
+                
+                # Convert to PoC
+                poc = self._regression_analyzer.convert_to_poc(test_case)
+                poc["from_regression_test"] = True
+                poc["test_file"] = test_case.file_path
+                
+                return poc
+        
+        return None
+
+    def _enhance_regression_test_with_llm(
+        self,
+        regression_poc: Dict[str, Any],
+        analysis: AnalysisResult,
+        cve_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Enhance regression test PoC with LLM analysis.
+        
+        Args:
+            regression_poc: PoC extracted from regression test
+            analysis: Vulnerability analysis
+            cve_id: CVE ID
+            
+        Returns:
+            Enhanced PoC
+        """
+        if not self._llm_service:
+            # No LLM, just return the regression test as-is
+            return regression_poc
+        
+        logger.info("Enhancing regression test with LLM")
+        print(f"  [Generator] Enhancing regression test with LLM...")
+        
+        self._create_session()
+        
+        test_code = regression_poc.get("code", "")
+        test_name = regression_poc.get("test_name", "unknown")
+        
+        enhance_prompt = f"""I found a regression test for this vulnerability.
+Please analyze it and add detailed comments explaining:
+1. What vulnerability it's testing
+2. How it triggers the vulnerability
+3. What the expected behavior is
+
+Regression Test ({test_name}):
+```
+{test_code[:2000]}
+```
+
+Vulnerability Analysis:
+- Type: {analysis.vulnerability_type}
+- Root Cause: {analysis.root_cause}
+- Component: {analysis.component}
+
+Provide the enhanced code with detailed comments."""
+
+        response = self._llm_chat(enhance_prompt, use_tools=False)
+        
+        # Parse enhanced code
+        enhanced = self._parse_generation_response(response, analysis, cve_id)
+        
+        # Merge with original
+        result = regression_poc.copy()
+        result.update(enhanced)
+        result["enhanced_by_llm"] = True
+        result["original_test_code"] = test_code
+        
+        return result
+

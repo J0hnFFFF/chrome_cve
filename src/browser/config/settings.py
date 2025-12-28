@@ -70,6 +70,28 @@ class BuildConfig:
 
 
 @dataclass
+class ReviewConfig:
+    """Phase 5.3: Expert Review configuration."""
+    expert_review_enabled: bool = True
+    auto_accept_threshold: int = 4  # Auto-accept if quality >= 4
+    editor: str = ""  # Leave empty to use $EDITOR or default
+
+
+@dataclass
+class KnowledgeConfig:
+    """Phase 5.1: Dynamic Knowledge configuration."""
+    enabled: bool = True
+    nvd_api_key: str = ""  # For similar CVE retrieval
+    cache_dir: str = "~/.chrome_cve_cache/knowledge"
+
+
+@dataclass
+class ChromiumConfig:
+    """Chromium source configuration."""
+    source_path: str = ""  # Path to chromium/src
+
+
+@dataclass
 class Settings:
     """Complete application settings."""
     general: GeneralConfig = field(default_factory=GeneralConfig)
@@ -79,6 +101,10 @@ class Settings:
     build: BuildConfig = field(default_factory=BuildConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     agents: AgentConfig = field(default_factory=AgentConfig)
+    # Phase 5 configurations
+    review: ReviewConfig = field(default_factory=ReviewConfig)
+    knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
+    chromium: ChromiumConfig = field(default_factory=ChromiumConfig)
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Settings":
@@ -91,6 +117,10 @@ class Settings:
             build=BuildConfig(**d.get("build", {})),
             memory=MemoryConfig(**d.get("memory", {})),
             agents=AgentConfig(**d.get("agents", {})),
+            # Phase 5
+            review=ReviewConfig(**d.get("review", {})),
+            knowledge=KnowledgeConfig(**d.get("knowledge", {})),
+            chromium=ChromiumConfig(**d.get("chromium", {})),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -124,4 +154,17 @@ class Settings:
                 "max_retries": self.agents.max_retries,
                 "critic_enabled": self.agents.critic_enabled,
             },
+            # Phase 5
+            "review": {
+                "expert_review_enabled": self.review.expert_review_enabled,
+                "auto_accept_threshold": self.review.auto_accept_threshold,
+            },
+            "knowledge": {
+                "enabled": self.knowledge.enabled,
+                "cache_dir": self.knowledge.cache_dir,
+            },
+            "chromium": {
+                "source_path": self.chromium.source_path,
+            },
         }
+

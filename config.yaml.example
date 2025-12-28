@@ -39,3 +39,24 @@ memory:
 agents:
   max_retries: 3
   critic_enabled: true
+
+# ============================================================================
+# Phase 5 Configuration
+# ============================================================================
+
+# Expert Review System (Phase 5.3)
+review:
+  expert_review_enabled: true    # Enable expert review after PoC generation
+  auto_accept_threshold: 4       # Auto-accept if quality score >= 4
+  editor: ""                     # Leave empty to use $EDITOR or system default
+
+# Dynamic Knowledge Builder (Phase 5.1)
+knowledge:
+  enabled: true                  # Enable dynamic knowledge extraction
+  nvd_api_key: ""                # NVD API key for similar CVE retrieval
+  cache_dir: "~/.chrome_cve_cache/knowledge"
+
+# Chromium Source
+chromium:
+  source_path: ""                # Path to chromium/src (for code context extraction)
+

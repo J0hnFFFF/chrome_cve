@@ -25,9 +25,27 @@ from .common_tools import (
     write_file,
     list_directory,
     run_command,
-    file_exists,
+)
+# Tools - Utilities and Helpers (NOT plugins)
+# Plugin-specific helpers have been moved to plugins/*/helpers/
+
+from .environment_manager import (  # Phase 0.2
+    EnvironmentManager,
+    VerificationEnv,
 )
 
+from .regression_test_analyzer import (  # Phase 0.3 + 2.3
+    RegressionTestAnalyzer,
+    TestCase,
+    TestAnalysis,
+)
+
+from .code_context_fetcher import (  # Phase 2.2
+    CodeContextFetcher,
+    FunctionContext,
+)
+
+# Execution tools
 from .execution import (
     ExecutionResult,
     D8Executor,
@@ -133,3 +151,20 @@ ALL_TOOLS = (
     POC_TOOLS +
     EXECUTION_TOOLS
 )
+
+__all__ = [
+    # Environment (Phase 0.2)
+    "EnvironmentManager",
+    "VerificationEnv",
+    # Regression Test Analysis (Phase 0.3 + 2.3)
+    "RegressionTestAnalyzer",
+    "TestCase",
+    "TestAnalysis",
+    # Code Context (Phase 2.2)
+    "CodeContextFetcher",
+    "FunctionContext",
+    # Execution
+    "ExecutionResult",
+    "D8Executor",
+    "ChromeExecutor",
+]

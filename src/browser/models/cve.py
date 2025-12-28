@@ -16,6 +16,7 @@ class PatchInfo:
     message: str = ""
     files_changed: List[str] = field(default_factory=list)
     diff_content: str = ""
+    regression_tests: str = ""  # Content of associated regression test files
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -24,6 +25,7 @@ class PatchInfo:
             "message": self.message,
             "files_changed": self.files_changed,
             "diff_content": self.diff_content,
+            "regression_tests": self.regression_tests,
         }
 
 

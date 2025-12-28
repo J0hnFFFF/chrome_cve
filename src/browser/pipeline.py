@@ -22,11 +22,18 @@ from .agents import (
     CriticAgent,
 )
 from .services import create_llm_service, LLMService, ToolDefinition
+
+# Phase 5 imports
+from .knowledge import DynamicKnowledgeBuilder, CVESimilarityFinder
+from .review import FeedbackStore, ExpertReviewCLI
+from .plugins.generators.helpers import ExploitChain, ChainOrchestrator
+
 from .tools import (
     fetch_chromium_commit,
     fetch_chromium_file,
     search_chromium_code,
     analyze_patch_components,
+    CodeContextFetcher,  # Phase 5.1
     ANALYSIS_TOOLS,
 )
 
@@ -151,6 +158,7 @@ class CVEReproductionPipeline:
         # Initialize components
         self._init_llm_service()
         self._init_memory()
+        self._init_phase5_components()  # Phase 5 - NEW
         self._init_tools()
         self._init_agents()
         self._init_intel()
@@ -160,6 +168,7 @@ class CVEReproductionPipeline:
             "cve_id": cve_id,
             "start_time": datetime.now().isoformat(),
             "stages": {},
+            "phase5_enabled": True,  # Always enabled
         }
 
     def _init_llm_service(self) -> None:
@@ -287,6 +296,37 @@ class CVEReproductionPipeline:
         self.orchestrator.register_agent(self.critic)
 
         logger.info("All agents initialized and registered")
+    
+    def _init_phase5_components(self) -> None:
+        """Initialize Phase 5 components (MANDATORY)."""
+        logger.info("Initializing Phase 5 components...")
+        
+        # Phase 5.1: Dynamic Knowledge Builder
+        chromium_path = self.settings.chromium.source_path if hasattr(self.settings, 'chromium') else None
+        
+        self.code_context_fetcher = CodeContextFetcher(
+            chromium_path=chromium_path
+        )
+        
+        self.knowledge_builder = DynamicKnowledgeBuilder(
+            chromium_path=chromium_path,
+            code_context_fetcher=self.code_context_fetcher
+        )
+        
+        self.cve_similarity_finder = CVESimilarityFinder()
+        
+        # Phase 5.2: Multi-step Exploit Chain
+        self.chain_orchestrator = ChainOrchestrator()
+        
+        # Phase 5.3: Expert Review System
+        self.feedback_store = FeedbackStore()
+        self.review_cli = ExpertReviewCLI(feedback_store=self.feedback_store)
+        
+        logger.info("Phase 5 components initialized:")
+        logger.info("  - DynamicKnowledgeBuilder")
+        logger.info("  - CVESimilarityFinder")
+        logger.info("  - ChainOrchestrator")
+        logger.info("  - FeedbackStore + ExpertReviewCLI")
 
     def _init_intel(self) -> None:
         """Initialize intel system."""
@@ -375,27 +415,105 @@ class CVEReproductionPipeline:
                     else:
                         print("  [Build] No specific commit identified to build. Skipping build stage.")
 
-            # Stage 3-5: Run multi-agent pipeline
-            print("\n[Stage 3-5] Multi-Agent Pipeline")
-            print("  - Analysis (LLM + tools)")
-            print("  - PoC Generation (LLM + templates)")
+            # Stage 3-5: Run multi-agent pipeline with Phase 5 enhancements
+            print("\n[Stage 3] Knowledge Building (Phase 5.1)")
+            knowledge_context = None
+            if cve_info:
+                try:
+                    # Build dynamic knowledge
+                    patch_info = {
+                        "diff": cve_info.get("patches", [{}])[0].get("diff", "") if isinstance(cve_info, dict) else getattr(cve_info.patches[0], "diff", "") if hasattr(cve_info, "patches") and cve_info.patches else "",
+                        "commit_hash": cve_info.get("patches", [{}])[0].get("commit_hash", "") if isinstance(cve_info, dict) else getattr(cve_info.patches[0], "commit_hash", "") if hasattr(cve_info, "patches") and cve_info.patches else "",
+                        "commit_message": cve_info.get("patches", [{}])[0].get("commit_message", "") if isinstance(cve_info, dict) else getattr(cve_info.patches[0], "commit_message", "") if hasattr(cve_info, "patches") and cve_info.patches else "",
+                    }
+                    
+                    knowledge_context = self.knowledge_builder.build_knowledge(
+                        cve_info=cve_info if isinstance(cve_info, dict) else {
+                            "cve_id": self.cve_id,
+                            "description": getattr(cve_info, "description", ""),
+                            "component": getattr(cve_info, "component", ""),
+                        },
+                        patch_info=patch_info
+                    )
+                    
+                    print(f"  [OK] Extracted {len(knowledge_context.source_comments)} source comments")
+                    print(f"  [OK] Found {len(knowledge_context.similar_cves)} similar CVEs")
+                    
+                    self.results["stages"]["knowledge"] = {
+                        "success": True,
+                        "comments": len(knowledge_context.source_comments),
+                        "similar_cves": len(knowledge_context.similar_cves),
+                    }
+                except Exception as e:
+                    logger.warning(f"Knowledge building failed: {e}")
+                    knowledge_context = None
+            
+            print("\n[Stage 4-6] Multi-Agent Pipeline")
+            print("  - Analysis (LLM + tools + knowledge)")
+            print("  - PoC Generation (LLM + templates + optimization)")
             print("  - Verification (execution + crash analysis)")
+
+            # Extract regression tests from intel
+            regression_tests = []
+            if cve_info and hasattr(cve_info, 'patches'):
+                for patch in cve_info.patches:
+                    if hasattr(patch, 'regression_tests') and patch.regression_tests:
+                        regression_tests.append(patch.regression_tests)
 
             result = self.orchestrator.run({
                 "cve_id": self.cve_id,
                 "cve_info": cve_info,
+                "knowledge_context": knowledge_context,  # Phase 5.1
                 "patches": cve_info.get("patches", []) if isinstance(cve_info, dict) else getattr(cve_info, "patches", []),
+                "regression_tests": regression_tests,
                 "start_time": self.results["start_time"],
                 "chrome_path": chrome_path,
                 "d8_path": d8_path,
             })
+            
+            # Phase 5.3: Expert Review (if PoC generated)
+            # Controlled by settings.review.expert_review_enabled
+            if result.get("poc") and result["poc"].get("code") and self.settings.review.expert_review_enabled:
+                print("\n[Stage 6.5] Expert Review (Phase 5.3)")
+                try:
+                    review_result = self.review_cli.request_review(
+                        poc_code=result["poc"]["code"],
+                        cve_id=self.cve_id,
+                        metadata={
+                            "component": result.get("analysis", {}).get("component", "unknown"),
+                            "vuln_type": result.get("analysis", {}).get("vulnerability_type", "unknown"),
+                            "confidence": result.get("analysis", {}).get("confidence", 0),
+                        }
+                    )
+                    
+                    # Handle review
+                    if review_result.action == "edit":
+                        print("  [OK] PoC modified by expert")
+                        result["poc"]["code"] = review_result.modified_code
+                        result["poc"]["expert_reviewed"] = True
+                        result["poc"]["expert_modifications"] = review_result.feedback
+                    elif review_result.action == "accept":
+                        print("  [OK] PoC accepted by expert")
+                        result["poc"]["expert_reviewed"] = True
+                    elif review_result.action == "reject":
+                        print("  [!] PoC rejected by expert")
+                        result["poc"]["expert_rejected"] = True
+                        result["poc"]["rejection_reason"] = review_result.feedback
+                    
+                    self.results["stages"]["expert_review"] = {
+                        "action": review_result.action,
+                        "quality_score": review_result.quality_score,
+                    }
+                except Exception as e:
+                    logger.warning(f"Expert review failed: {e}")
 
             # Stage 5: Learning
-            print("\n[Stage 5] Learning & Storage")
+            print("\n[Stage 7] Learning & Storage")
             self._store_case(result)
 
             # Finalize results
             self.results["success"] = result.get("success", False)
+            self.results["knowledge"] = knowledge_context  # Phase 5.1
             self.results["analysis"] = result.get("analysis")
             self.results["poc"] = result.get("poc")
             self.results["verification"] = result.get("verification")

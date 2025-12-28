@@ -134,10 +134,10 @@ def main():
     print_banner()
     print(f"Target: {args.cve}\n")
 
-    # Run pipeline
+    # Initialize pipeline
     try:
-        from .pipeline import CVEReproductionPipeline
-
+        from pipeline import CVEReproductionPipeline  # Changed from relative import
+        
         pipeline = CVEReproductionPipeline(
             cve_id=args.cve,
             config_path=args.config,

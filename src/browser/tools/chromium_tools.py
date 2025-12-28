@@ -256,3 +256,72 @@ def analyze_patch_components(commit_hash: str, repo: str = "chromium/src") -> st
         return f"Detected components:\n" + "\n".join(f"  - {c}" for c in sorted(detected))
     else:
         return "Could not determine component from file paths"
+@tools.tool
+def fetch_associated_tests(commit_hash: str, repo: str = "chromium/src") -> str:
+    """
+    Fetch regression tests (PoC candidates) associated with a commit.
+    Scans the commit for files in test directories (LayoutTests, web_tests, etc.)
+    and returns their content.
+
+    :param commit_hash: The git commit hash
+    :param repo: Repository path
+    :return: Content of found test files with metadata
+    """
+    files_result = list_commit_files.func(commit_hash, repo)
+    
+    if files_result.startswith("Error:"):
+        return f"Error listing files: {files_result}"
+        
+    # Heuristics for test files
+    test_patterns = [
+        r"LayoutTests/.*\.js$",
+        r"LayoutTests/.*\.html$",
+        r"web_tests/.*\.js$",
+        r"web_tests/.*\.html$",
+        r"chrome/test/data/.*\.js$",
+        r"chrome/test/data/.*\.html$",
+        r"v8/test/mjsunit/.*\.js$",
+        r"v8/test/cctest/.*\.cc$",
+        r"components/.*_unittest\.cc$",
+        r".*regression.*\.js$",
+        r".*repro.*\.js$",
+    ]
+    
+    file_lines = files_result.split('\n')[1:] # Skip header
+    found_tests = []
+    
+    print(f"    [Crawler] Scanning {len(file_lines)} files for tests...")
+    
+    for line in file_lines:
+        file_path = line.strip().lstrip('- ')
+        
+        # Check if file matches any test pattern
+        is_candidate = False
+        for pattern in test_patterns:
+            if re.search(pattern, file_path, re.IGNORECASE):
+                is_candidate = True
+                break
+                
+        if is_candidate:
+            print(f"    [Crawler] Found candidate: {file_path}")
+            # Fetch file content
+            content = fetch_chromium_file.func(file_path, commit_hash=commit_hash, repo=repo)
+            if not content.startswith("Error:"):
+                found_tests.append({
+                    "path": file_path,
+                    "content": content
+                })
+            else:
+                print(f"    [Crawler] Failed to fetch {file_path}")
+
+    if not found_tests:
+        return "No regression tests found in this commit."
+        
+    # Format output
+    output = [f"Found {len(found_tests)} regression tests in commit {commit_hash}:"]
+    for test in found_tests:
+        output.append(f"\n--- FILE: {test['path']} ---")
+        output.append(test['content'])
+        output.append("--- END FILE ---")
+        
+    return "\n".join(output)
