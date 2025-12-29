@@ -136,6 +136,16 @@ class OpenAIBackend(LLMBackend):
     ):
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self.model = model
+        
+        # Validate and fix base_url
+        if base_url and base_url.strip():
+            # Ensure it has a protocol
+            if not base_url.startswith(('http://', 'https://')):
+                logger.warning(f"base_url '{base_url}' missing protocol, setting to None")
+                base_url = None
+        else:
+            base_url = None
+        
         self.base_url = base_url
 
         # Import OpenAI client

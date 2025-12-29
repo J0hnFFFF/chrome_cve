@@ -124,13 +124,16 @@ class D8Executor:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=exec_env,
+                encoding='utf-8',
+                errors='ignore',
             )
 
             stdout, stderr = proc.communicate(timeout=timeout)
             execution_time = time.time() - start_time
 
-            stdout_str = stdout.decode('utf-8', errors='ignore')
-            stderr_str = stderr.decode('utf-8', errors='ignore')
+            # stdout and stderr are already strings due to encoding parameter
+            stdout_str = stdout
+            stderr_str = stderr
 
             # Analyze result
             crashed = self._detect_crash(proc.returncode, stdout_str, stderr_str)
@@ -314,13 +317,16 @@ class ChromeExecutor:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=exec_env,
+                encoding='utf-8',
+                errors='ignore',
             )
 
             stdout, stderr = proc.communicate(timeout=timeout)
             execution_time = time.time() - start_time
 
-            stdout_str = stdout.decode('utf-8', errors='ignore')
-            stderr_str = stderr.decode('utf-8', errors='ignore')
+            # stdout and stderr are already strings due to encoding parameter
+            stdout_str = stdout
+            stderr_str = stderr
 
             crashed = self._detect_crash(proc.returncode, stdout_str, stderr_str)
 

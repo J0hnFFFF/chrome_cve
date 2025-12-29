@@ -218,7 +218,7 @@ console.log("[*] PoC complete - check for ASAN errors or crash");
 """
         )
     
-    def _create_typedarr_overflow_template(self) -> PoCTemplate:
+    def _create_typedarray_overflow_template(self) -> PoCTemplate:
         """Create TypedArray overflow template."""
         return PoCTemplate(
             name="typedarray_overflow",

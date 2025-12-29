@@ -23,6 +23,17 @@ class KnowledgeContext:
     design_docs: List[str]
     commit_context: Dict[str, Any]
     confidence: float
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "cve_id": self.cve_id,
+            "source_comments": self.source_comments,
+            "similar_cves": self.similar_cves,
+            "design_docs": self.design_docs,
+            "commit_context": self.commit_context,
+            "confidence": self.confidence,
+        }
 
 
 class DynamicKnowledgeBuilder:

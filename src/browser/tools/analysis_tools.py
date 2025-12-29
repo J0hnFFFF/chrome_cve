@@ -396,3 +396,119 @@ Details:
 {report.details}
 {'='*70}
 """
+
+# ============================================================================
+# CodeQL Analysis Tools
+# ============================================================================
+
+def codeql_create_database(source_path: str, database_path: str = None) -> bool:
+    """Create a CodeQL database for the source code."""
+    from ..services.codeql_service import CodeQLService
+    service = CodeQLService(source_path, database_path)
+    return service.create_database()
+
+def codeql_run_custom_query(source_path: str, query: str, database_path: str = None) -> Any:
+    """Run a custom CodeQL query."""
+    from ..services.codeql_service import CodeQLService
+    service = CodeQLService(source_path, database_path)
+    return service.run_query(query)
+
+def codeql_find_function_calls(source_path: str, function_name: str, database_path: str = None) -> Any:
+    """Find all calls to a specific function using CodeQL."""
+    from ..services.codeql_service import CodeQLService
+    service = CodeQLService(source_path, database_path)
+    return service.find_function_calls(function_name)
+
+def codeql_find_callers(source_path: str, function_name: str, database_path: str = None) -> Any:
+    """Find all callers of a specific function using CodeQL."""
+    from ..services.codeql_service import CodeQLService
+    service = CodeQLService(source_path, database_path)
+    return service.find_callers(function_name)
+
+def codeql_find_callees(source_path: str, function_name: str, database_path: str = None) -> Any:
+    """Find all functions called by a specific function using CodeQL."""
+    from ..services.codeql_service import CodeQLService
+    service = CodeQLService(source_path, database_path)
+    return service.find_callees(function_name)
+
+def codeql_analyze_taint_flow(source_path: str, source_function: str, sink_pattern: str, database_path: str = None) -> Any:
+    """Analyze taint flow via CodeQL."""
+    from ..services.codeql_service import CodeQLService
+    service = CodeQLService(source_path, database_path)
+    return service.analyze_taint_flow(source_function, sink_pattern)
+
+def codeql_find_memory_operations(source_path: str, file_pattern: str, database_path: str = None) -> Any:
+    """Find memory operations using CodeQL."""
+    from ..services.codeql_service import CodeQLService
+    service = CodeQLService(source_path, database_path)
+    return service.find_memory_operations(file_pattern)
+
+
+# ============================================================================
+# Ghidra Analysis Tools
+# ============================================================================
+
+def ghidra_analyze_binary(binary_path: str) -> bool:
+    """Perform basic Ghidra analysis on a binary."""
+    from ..services.ghidra_service import GhidraService
+    service = GhidraService()
+    return service.analyze_binary(binary_path)
+
+def ghidra_decompile_function(binary_path: str, function_name: str) -> Any:
+    """Decompile a function using Ghidra."""
+    from ..services.ghidra_service import GhidraService
+    service = GhidraService()
+    return service.decompile_function(binary_path, function_name)
+
+def ghidra_list_functions(binary_path: str) -> Any:
+    """List all functions in a binary using Ghidra."""
+    from ..services.ghidra_service import GhidraService
+    service = GhidraService()
+    return service.list_functions(binary_path)
+
+def ghidra_compare_binaries(binary1_path: str, binary2_path: str) -> Any:
+    """Compare two binaries using Ghidra binary diffing logic."""
+    from ..services.ghidra_service import GhidraService
+    service = GhidraService()
+    return service.compare_binaries(binary1_path, binary2_path)
+
+
+# ============================================================================
+# Utility & Status
+# ============================================================================
+
+def check_analysis_tools_status() -> Dict[str, bool]:
+    """Check availability of CodeQL and Ghidra."""
+    try:
+        from ..services.codeql_service import CodeQLService
+        from ..services.ghidra_service import GhidraService
+        
+        codeql = CodeQLService("")
+        ghidra = GhidraService()
+        
+        return {
+            "codeql": codeql.is_available(),
+            "ghidra": ghidra.is_available()
+        }
+    except Exception:
+        return {"codeql": False, "ghidra": False}
+
+# Tool collections
+CODEQL_TOOLS = [
+    codeql_find_function_calls,
+    codeql_find_callers,
+    codeql_find_callees,
+    codeql_analyze_taint_flow,
+    codeql_find_memory_operations,
+    codeql_run_custom_query,
+    codeql_create_database,
+]
+
+GHIDRA_TOOLS = [
+    ghidra_decompile_function,
+    ghidra_list_functions,
+    ghidra_compare_binaries,
+    ghidra_analyze_binary,
+]
+
+STATIC_ANALYSIS_TOOLS = CODEQL_TOOLS + GHIDRA_TOOLS

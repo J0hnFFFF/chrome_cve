@@ -140,9 +140,18 @@ class CVEReproductionPipeline:
         d8_path: str = None,
         model: str = None,
         commit: str = None,
+        num_candidates: int = 3,
+        parallel: bool = False,
+        asan: bool = False,
+        differential: bool = False,
+        vulnerable_version: str = None,
+        fixed_version: str = None,
+        use_wsl: bool = False,
     ):
         self.cve_id = cve_id
         self.commit = commit
+        self.num_candidates = num_candidates
+        self.parallel = parallel
         self.settings = load_config(config_path)
         self.output_dir = Path(output_dir or f"./output/{cve_id}")
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -154,6 +163,17 @@ class CVEReproductionPipeline:
             self.settings.execution.d8_path = d8_path
         if model:
             self.settings.llm.default_model = model
+        
+        # New settings mapping
+        if asan:
+            self.settings.execution.asan_enabled = True
+        if use_wsl:
+            self.settings.execution.use_wsl = True
+        
+        # Differential analysis
+        self.differential = differential
+        self.vulnerable_version = vulnerable_version
+        self.fixed_version = fixed_version
 
         # Initialize components
         self._init_llm_service()
@@ -198,9 +218,45 @@ class CVEReproductionPipeline:
         try:
             self.llm_service = create_llm_service(config=llm_config, backend=backend)
             logger.info(f"LLM service initialized with {backend} backend")
+        except ImportError as e:
+            # Missing package
+            error_msg = (
+                f"\n{'='*70}\n"
+                f"❌ LLM INITIALIZATION FAILED - Missing Package\n"
+                f"{'='*70}\n"
+                f"Backend: {backend}\n"
+                f"Error: {str(e)}\n\n"
+                f"Solution:\n"
+                f"  pip install openai  # For OpenAI backend\n"
+                f"  pip install anthropic  # For Anthropic backend\n"
+                f"{'='*70}\n"
+            )
+            logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
         except Exception as e:
-            logger.warning(f"Failed to initialize LLM service: {e}")
-            self.llm_service = None
+            # Other initialization errors (invalid API key, network, etc.)
+            error_msg = (
+                f"\n{'='*70}\n"
+                f"❌ LLM INITIALIZATION FAILED\n"
+                f"{'='*70}\n"
+                f"Backend: {backend}\n"
+                f"Error: {str(e)}\n\n"
+                f"Common causes:\n"
+                f"  1. Invalid API key\n"
+                f"  2. Invalid base URL (must start with http:// or https://)\n"
+                f"  3. Network connectivity issues\n"
+                f"  4. API service unavailable\n\n"
+                f"Current configuration:\n"
+                f"  API Key: {'✓ Set' if llm_config.get(f'{backend}_api_key') else '✗ Not set'}\n"
+                f"  Base URL: {llm_config.get(f'{backend}_base_url') or 'Default'}\n"
+                f"  Model: {llm_config.get('default_model')}\n\n"
+                f"Please check your environment variables:\n"
+                f"  OPENAI_API_KEY, OPENAI_BASE_URL (for OpenAI)\n"
+                f"  ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL (for Anthropic)\n"
+                f"{'='*70}\n"
+            )
+            logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
 
     def _init_memory(self) -> None:
         """Initialize memory systems."""
@@ -250,6 +306,8 @@ class CVEReproductionPipeline:
         # Create agents
         self.orchestrator = OrchestratorAgent({
             "max_retries": self.settings.agents.max_retries,
+            "num_candidates": self.num_candidates,
+            "parallel": self.parallel,
         })
         self.analyzer = AnalyzerAgent()
         self.generator = GeneratorAgent()
@@ -257,6 +315,8 @@ class CVEReproductionPipeline:
             "chrome_path": self.settings.execution.chrome_path,
             "d8_path": self.settings.execution.d8_path,
             "timeout": self.settings.execution.timeout,
+            "asan_enabled": self.settings.execution.asan_enabled,
+            "use_wsl": self.settings.execution.use_wsl,
         })
         self.critic = CriticAgent()
 
@@ -304,9 +364,7 @@ class CVEReproductionPipeline:
         # Phase 5.1: Dynamic Knowledge Builder
         chromium_path = self.settings.chromium.source_path if hasattr(self.settings, 'chromium') else None
         
-        self.code_context_fetcher = CodeContextFetcher(
-            chromium_path=chromium_path
-        )
+        self.code_context_fetcher = CodeContextFetcher()
         
         self.knowledge_builder = DynamicKnowledgeBuilder(
             chromium_path=chromium_path,
@@ -643,8 +701,16 @@ class CVEReproductionPipeline:
     def _save_results(self) -> None:
         """Save results to file."""
         results_path = self.output_dir / "results.json"
+        
+        # Convert non-serializable objects
+        serializable_results = self.results.copy()
+        if "knowledge" in serializable_results and serializable_results["knowledge"]:
+            knowledge = serializable_results["knowledge"]
+            if hasattr(knowledge, 'to_dict'):
+                serializable_results["knowledge"] = knowledge.to_dict()
+        
         with open(results_path, 'w', encoding='utf-8') as f:
-            json.dump(self.results, f, indent=2)
+            json.dump(serializable_results, f, indent=2)
 
         # Save PoC if generated
         poc = self.results.get("poc", {})

@@ -37,6 +37,7 @@ class ExecutionConfig:
     d8_path: str = ""
     timeout: int = 60
     asan_enabled: bool = True
+    use_wsl: bool = False
 
 
 @dataclass

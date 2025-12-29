@@ -27,7 +27,8 @@ class NVDSource(IntelSource):
     tier = 1
     NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
-    def __init__(self, api_key: str = ""):
+    def __init__(self, api_key: str = "", timeout: int = 30):
+        super().__init__(timeout)
         self.api_key = api_key
 
     def collect(self, cve_id: str) -> IntelResult:
@@ -585,7 +586,8 @@ class GitHubPoCSource(IntelSource):
     name = "github_poc"
     tier = 2
 
-    def __init__(self, token: str = ""):
+    def __init__(self, token: str = "", timeout: int = 30):
+        super().__init__(timeout)
         self.token = token
 
     def collect(self, cve_id: str) -> IntelResult:

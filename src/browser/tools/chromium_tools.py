@@ -401,7 +401,11 @@ def analyze_patch_components(commit_hash: str, repo: str = "chromium/src") -> st
     :param repo: Repository path
     :return: Analysis of affected components
     """
-    files_result = list_commit_files.func(commit_hash, repo)
+    # Use invoke instead of .func to avoid deprecation warning
+    if hasattr(list_commit_files, 'invoke'):
+        files_result = list_commit_files.invoke({"commit_hash": commit_hash, "repo": repo})
+    else:
+        files_result = list_commit_files.func(commit_hash, repo)
 
     if files_result.startswith("Error:"):
         return files_result
@@ -447,7 +451,11 @@ def fetch_associated_tests(commit_hash: str, repo: str = "chromium/src") -> str:
     :param repo: Repository path
     :return: Content of found test files with metadata
     """
-    files_result = list_commit_files.func(commit_hash, repo)
+    # Use invoke instead of .func to avoid deprecation warning
+    if hasattr(list_commit_files, 'invoke'):
+        files_result = list_commit_files.invoke({"commit_hash": commit_hash, "repo": repo})
+    else:
+        files_result = list_commit_files.func(commit_hash, repo)
     
     if files_result.startswith("Error:"):
         return f"Error listing files: {files_result}"
@@ -485,7 +493,11 @@ def fetch_associated_tests(commit_hash: str, repo: str = "chromium/src") -> str:
         if is_candidate:
             print(f"    [Crawler] Found candidate: {file_path}")
             # Fetch file content
-            content = fetch_chromium_file.func(file_path, commit_hash=commit_hash, repo=repo)
+            # Use invoke instead of .func to avoid deprecation warning
+            if hasattr(fetch_chromium_file, 'invoke'):
+                content = fetch_chromium_file.invoke({"file_path": file_path, "commit_hash": commit_hash, "repo": repo})
+            else:
+                content = fetch_chromium_file.func(file_path, commit_hash=commit_hash, repo=repo)
             if not content.startswith("Error:"):
                 found_tests.append({
                     "path": file_path,

@@ -7,11 +7,32 @@ Usage:
     python main.py --cve CVE-2024-XXXX [options]
 """
 
+# Fix Windows GBK encoding issue FIRST - before any imports
+import os
+import sys
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+
+# Suppress LangChain deprecation warnings from agentlib
+# This is a third-party library issue, not ours
+import warnings
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='agentlib')
+
+# Also set for subprocess
+if sys.platform == 'win32':
+    import subprocess
+    # Monkey patch Popen to always use UTF-8
+    _original_popen_init = subprocess.Popen.__init__
+    def _patched_popen_init(self, *args, **kwargs):
+        if 'encoding' not in kwargs and 'universal_newlines' not in kwargs and 'text' not in kwargs:
+            if kwargs.get('stdout') == subprocess.PIPE or kwargs.get('stderr') == subprocess.PIPE:
+                kwargs['encoding'] = 'utf-8'
+                kwargs['errors'] = 'ignore'
+        return _original_popen_init(self, *args, **kwargs)
+    subprocess.Popen.__init__ = _patched_popen_init
+
 import argparse
 import logging
-import sys
 from typing import Optional
-
 
 # ============================================================================
 # Logging Setup
@@ -91,6 +112,17 @@ Examples:
     parser.add_argument("--chrome-path", type=str, default=None, help="Path to Chrome executable")
     parser.add_argument("--d8-path", type=str, default=None, help="Path to d8 executable")
     parser.add_argument("--timeout", type=int, default=60, help="Execution timeout in seconds")
+    parser.add_argument("--num-candidates", type=int, default=3, help="Number of PoC candidates to generate")
+    parser.add_argument("--parallel", action="store_true", help="Run candidates generation and verification in parallel")
+    parser.add_argument("--asan", action="store_true", help="Enable ASAN checks and use ASAN-instrumented binaries")
+
+    # Differential Analysis
+    parser.add_argument("--differential", action="store_true", help="Enable differential analysis between versions")
+    parser.add_argument("--vulnerable-version", type=str, default=None, help="Specific vulnerable version/commit")
+    parser.add_argument("--fixed-version", type=str, default=None, help="Specific fixed version/commit")
+
+    # Environment
+    parser.add_argument("--use-wsl", action="store_true", help="Use WSL for binary execution")
 
     # Output options
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
@@ -98,7 +130,7 @@ Examples:
     parser.add_argument("--log-file", type=str, default=None, help="Log file path")
 
     # Utility
-    parser.add_argument("--version", action="version", version="Chrome CVE Reproducer v2.0")
+    parser.add_argument("--version", action="version", version="Chrome CVE Reproducer v3.0")
 
     return parser
 
@@ -136,7 +168,7 @@ def main():
 
     # Initialize pipeline
     try:
-        from pipeline import CVEReproductionPipeline  # Changed from relative import
+        from .pipeline import CVEReproductionPipeline
         
         pipeline = CVEReproductionPipeline(
             cve_id=args.cve,
@@ -146,6 +178,14 @@ def main():
             d8_path=args.d8_path,
             model=args.model,
             commit=args.commit,
+            # Phase 6 additions
+            num_candidates=args.num_candidates,
+            parallel=args.parallel,
+            asan=args.asan,
+            differential=args.differential,
+            vulnerable_version=args.vulnerable_version,
+            fixed_version=args.fixed_version,
+            use_wsl=args.use_wsl,
         )
 
         results = pipeline.run()

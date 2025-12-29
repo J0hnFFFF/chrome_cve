@@ -321,6 +321,7 @@ class OrchestratorAgent(BaseReproAgent):
                 "analysis": analysis,
                 "cve_info": cve_info.to_dict() if hasattr(cve_info, 'to_dict') else cve_info,
                 "num_candidates": self.config.get("num_candidates", 3),
+                "parallel": self.config.get("parallel", False),
             },
         )
 

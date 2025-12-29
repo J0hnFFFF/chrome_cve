@@ -42,7 +42,10 @@ class IntelSource(ABC):
 
     name: str = "base_source"
     tier: int = 1  # 1=required, 2=important, 3=supplementary
-    timeout: int = 30
+    
+    def __init__(self, timeout: int = 30):
+        """Initialize intel source with timeout."""
+        self.timeout = timeout
 
     @abstractmethod
     def collect(self, cve_id: str) -> IntelResult:

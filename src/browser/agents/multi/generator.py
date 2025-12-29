@@ -7,13 +7,14 @@ Uses knowledge from similar cases and iterative refinement.
 
 import re
 import logging
+import concurrent.futures
 from typing import Dict, Any, Optional, List
 
 from .base import BaseReproAgent, AgentMessage, AgentState
 from ...plugins import get_registry, AnalysisResult, PoCResult
 from ...memory import SemanticMemory, EpisodeMemory
 from ...tools.regression_test_analyzer import RegressionTestAnalyzer
-from ...tools.poc_template_library import PoCTemplateLibrary # NEW
+from ...plugins.generators.helpers.poc_template_library import PoCTemplateLibrary # NEW
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,8 @@ class GeneratorAgent(BaseReproAgent):
             candidates = self.generate_candidates(
                 analysis=analysis_result,
                 cve_info=cve_info,
-                num_candidates=num_candidates
+                num_candidates=num_candidates,
+                parallel=parallel
             )
 
             return msg.create_response(
@@ -288,7 +290,8 @@ Include comments explaining each step."""
         self,
         analysis: AnalysisResult,
         cve_info: Dict[str, Any],
-        num_candidates: int = 3
+        num_candidates: int = 3,
+        parallel: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Generate multiple candidate PoCs with different strategies.
@@ -297,6 +300,7 @@ Include comments explaining each step."""
             analysis: Vulnerability analysis
             cve_info: CVE information
             num_candidates: Number of candidates to generate (default: 3)
+            parallel: Whether to generate in parallel (default: False)
             
         Returns:
             List of PoC result dictionaries
@@ -350,21 +354,34 @@ Include comments explaining each step."""
                 logger.info(f"  [Generator] ✓ Candidate 1: Template-based")
         
         # Generate remaining candidates with different strategies
-        for i, strategy in enumerate(selected_strategies):
-            if len(candidates) >= num_candidates:
-                break
-                
+        def _gen_poc(strat):
             try:
-                poc = self._generate_with_strategy(
-                    analysis,
-                    cve_info,
-                    strategy
-                )
-                poc["strategy"] = strategy["name"]
-                candidates.append(poc)
-                logger.info(f"  [Generator] ✓ Candidate {len(candidates)}: {strategy['name']}")
+                poc_res = self._generate_with_strategy(analysis, cve_info, strat)
+                poc_res["strategy"] = strat["name"]
+                return poc_res
             except Exception as e:
-                logger.warning(f"  [Generator] ✗ Failed to generate {strategy['name']}: {e}")
+                logger.warning(f"  [Generator] ✗ Failed to generate {strat['name']}: {e}")
+                return None
+
+        if parallel and len(selected_strategies) > 0:
+            logger.info(f"  [Generator] Launching {len(selected_strategies)} strategies in parallel...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(selected_strategies), 5)) as executor:
+                futures = [executor.submit(_gen_poc, s) for s in selected_strategies]
+                for future in concurrent.futures.as_completed(futures):
+                    poc = future.result()
+                    if poc:
+                        candidates.append(poc)
+                        logger.info(f"  [Generator] ✓ Candidate {len(candidates)}: {poc['strategy']}")
+                        if len(candidates) >= num_candidates:
+                            break
+        else:
+            for strategy in selected_strategies:
+                if len(candidates) >= num_candidates:
+                    break
+                poc = _gen_poc(strategy)
+                if poc:
+                    candidates.append(poc)
+                    logger.info(f"  [Generator] ✓ Candidate {len(candidates)}: {strategy['name']}")
         
         # If we don't have enough, generate generic ones
         while len(candidates) < num_candidates:

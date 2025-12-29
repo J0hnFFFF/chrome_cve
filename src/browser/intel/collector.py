@@ -4,6 +4,7 @@ Intel Collector
 Orchestrates intelligence collection from multiple sources.
 """
 
+import logging
 from typing import List, Dict, Any, Optional
 from .base import IntelSource, IntelResult
 from .sources import (
@@ -15,6 +16,8 @@ from .sources import (
     CISAKEVSource,
 )
 from .fusion import IntelFusion
+
+logger = logging.getLogger(__name__)
 
 
 class IntelCollector:
@@ -108,15 +111,33 @@ class IntelCollector:
             result = gitiles.collect_commit(repo, commit)
             
             # --- New Feature: Regression Test Crawler ---
-            from ..tools.chromium_tools import fetch_associated_tests
-            print(f"  Crawler: Scanning commit {commit} for regression tests...")
-            tests_data = fetch_associated_tests.func(commit, repo)
-            if tests_data and not tests_data.startswith("No regression tests"):
-                print(f"    ✓ Found relevant test files")
-                # Attach to the result using a custom field
-                # IntelResult data is a bit rigid, so we add it to the internal dictionary
-                if result.success and isinstance(result.data, dict):
-                    result.data['regression_tests'] = tests_data
+            try:
+                # Import the actual function, not the SerializedTool wrapper
+                from ..tools import chromium_tools
+                print(f"  Crawler: Scanning commit {commit} for regression tests...")
+                
+                # Call the function directly from the module
+                if hasattr(chromium_tools, 'fetch_associated_tests'):
+                    func = chromium_tools.fetch_associated_tests
+                    
+                    # Check if it's a SerializedTool (has invoke method)
+                    if hasattr(func, 'invoke'):
+                        # Use invoke instead of __call__ (LangChain 0.1.47+)
+                        tests_data = func.invoke({"commit_hash": commit, "repo": repo})
+                    elif hasattr(func, 'func'):
+                        # It's wrapped but doesn't have invoke, use .func
+                        tests_data = func.func(commit, repo)
+                    else:
+                        # It's the raw function
+                        tests_data = func(commit, repo)
+                    
+                    if tests_data and not tests_data.startswith("No regression tests"):
+                        print(f"    ✓ Found relevant test files")
+                        # Attach to the result using a custom field
+                        if result.success and isinstance(result.data, dict):
+                            result.data['regression_tests'] = tests_data
+            except Exception as e:
+                logger.debug(f"Failed to fetch regression tests: {e}")
             # --------------------------------------------
             
             results.append(result)

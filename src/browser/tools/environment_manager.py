@@ -250,7 +250,14 @@ class EnvironmentManager:
     def _detect_wsl(self) -> bool:
         """Detect if WSL is available."""
         try:
-            result = subprocess.run(["wsl", "-l", "-q"], capture_output=True, text=True, timeout=2)
+            result = subprocess.run(
+                ["wsl", "-l", "-q"], 
+                capture_output=True, 
+                text=True, 
+                encoding='utf-8',
+                errors='ignore',
+                timeout=2
+            )
             return result.returncode == 0
         except (subprocess.SubprocessError, FileNotFoundError):
             return False
