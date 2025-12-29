@@ -136,15 +136,30 @@ Examples:
 
 
 def print_banner():
-    """Print ASCII banner."""
-    print("""
+    """Print ASCII banner with Rich."""
+    from .utils.rich_console import console
+    from rich.panel import Panel
+    from rich.text import Text
+    
+    banner_text = """
  ██████╗██╗   ██╗███████╗    ██████╗ ███████╗██████╗ ██████╗  ██████╗
 ██╔════╝██║   ██║██╔════╝    ██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔═══██╗
 ██║     ██║   ██║█████╗      ██████╔╝█████╗  ██████╔╝██████╔╝██║   ██║
 ██║     ╚██╗ ██╔╝██╔══╝      ██╔══██╗██╔══╝  ██╔═══╝ ██╔══██╗██║   ██║
 ╚██████╗ ╚████╔╝ ███████╗    ██║  ██║███████╗██║     ██║  ██║╚██████╔╝
  ╚═════╝  ╚═══╝  ╚══════╝    ╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝  ╚═╝ ╚═════╝
-    """)
+    """
+    
+    text = Text(banner_text, style="bold cyan")
+    panel = Panel(
+        text,
+        title="[bold yellow]Chrome CVE Reproduction Framework[/bold yellow]",
+        subtitle="[dim]Multi-Agent AI-Powered Security Testing[/dim]",
+        border_style="bright_blue",
+        padding=(0, 2)
+    )
+    console.print(panel)
+    return console
 
 
 def main():
@@ -162,9 +177,28 @@ def main():
     log_level = "DEBUG" if args.debug else ("INFO" if args.verbose else "WARNING")
     logger = setup_logging(log_level, args.log_file)
 
-    # Print banner
-    print_banner()
-    print(f"Target: {args.cve}\n")
+    # Print banner and get console
+    console = print_banner()
+    
+    # Display target information
+    from rich.panel import Panel
+    from rich.table import Table
+    
+    # Create info table
+    info_table = Table(show_header=False, box=None, padding=(0, 2))
+    info_table.add_column("Key", style="bold cyan")
+    info_table.add_column("Value", style="yellow")
+    
+    info_table.add_row("🎯 Target CVE", args.cve)
+    info_table.add_row("📊 Candidates", str(args.num_candidates))
+    info_table.add_row("⚡ Parallel", "Enabled" if args.parallel else "Disabled")
+    if args.asan:
+        info_table.add_row("🛡️  ASAN", "Enabled")
+    if args.differential:
+        info_table.add_row("🔬 Differential", "Enabled")
+    
+    console.print(Panel(info_table, title="[bold]Configuration[/bold]", border_style="green"))
+    console.print()
 
     # Initialize pipeline
     try:

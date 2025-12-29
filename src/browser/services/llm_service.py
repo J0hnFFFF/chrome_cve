@@ -19,6 +19,25 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
+# Import Rich console for better output
+try:
+    from ..utils.rich_console import console
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+    console = None
+
+
+def _print(message: str, style: str = None):
+    """Print with Rich if available, otherwise use plain print."""
+    if RICH_AVAILABLE and console:
+        if style:
+            console.print(f"[{style}]{message}[/{style}]")
+        else:
+            console.print(message)
+    else:
+        print(message)
+
 
 # ============================================================================
 # Data Classes
@@ -183,10 +202,10 @@ class OpenAIBackend(LLMBackend):
             kwargs["tool_choice"] = "auto"
 
         try:
-            print(f"    [LLM] Calling OpenAI API ({self.model})...")
+            _print(f"    [LLM] Calling OpenAI API ({self.model})...", "dim cyan")
             response = self.client.chat.completions.create(**kwargs)
             choice = response.choices[0]
-            print(f"    [LLM] Response received (tokens: {response.usage.total_tokens})")
+            _print(f"    [LLM] Response received (tokens: {response.usage.total_tokens})", "dim green")
 
             # Extract tool calls if present
             tool_calls = []
@@ -278,9 +297,9 @@ class AnthropicBackend(LLMBackend):
             ]
 
         try:
-            print(f"    [LLM] Calling Anthropic API ({self.model})...")
+            _print(f"    [LLM] Calling Anthropic API ({self.model})...", "dim cyan")
             response = self.client.messages.create(**kwargs)
-            print(f"    [LLM] Response received (tokens: {response.usage.input_tokens + response.usage.output_tokens})")
+            _print(f"    [LLM] Response received (tokens: {response.usage.input_tokens + response.usage.output_tokens})", "dim green")
 
             # Extract content and tool use
             content = ""
@@ -431,12 +450,12 @@ class LLMSession:
                 tool_args = tool_call["arguments"]
                 tool_id = tool_call["id"]
 
-                print(f"    [LLM] Executing tool: {tool_name}")
+                _print(f"    [LLM] Executing tool: {tool_name}", "dim yellow")
                 logger.debug(f"Executing tool: {tool_name}({tool_args})")
 
                 # Execute tool
                 result = self._execute_tool(tool_name, tool_args)
-                print(f"    [LLM] Tool result: {str(result)[:100]}...")
+                _print(f"    [LLM] Tool result: {str(result)[:100]}...", "dim")
 
                 # Add tool result
                 self.messages.append(Message(

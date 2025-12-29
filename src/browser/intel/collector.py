@@ -19,6 +19,25 @@ from .fusion import IntelFusion
 
 logger = logging.getLogger(__name__)
 
+# Import Rich console for better output
+try:
+    from ..utils.rich_console import console
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+    console = None
+
+
+def _print(message: str, style: str = None):
+    """Print with Rich if available, otherwise use plain print."""
+    if RICH_AVAILABLE and console:
+        if style:
+            console.print(f"[{style}]{message}[/{style}]")
+        else:
+            console.print(message)
+    else:
+        print(message)
+
 
 class IntelCollector:
     """
@@ -80,14 +99,14 @@ class IntelCollector:
             if source.tier > tier_limit:
                 continue
 
-            print(f"  Collecting from {source.name}...")
+            _print(f"  Collecting from {source.name}...", "cyan")
             result = source.collect(cve_id)
             results[source.name] = result
 
             if result.success:
-                print(f"    ✓ {source.name}: Got data")
+                _print(f"    ✓ {source.name}: Got data", "green")
             else:
-                print(f"    ✗ {source.name}: {result.error}")
+                _print(f"    ✗ {source.name}: {result.error}", "red")
 
         return results
 
@@ -114,7 +133,7 @@ class IntelCollector:
             try:
                 # Import the actual function, not the SerializedTool wrapper
                 from ..tools import chromium_tools
-                print(f"  Crawler: Scanning commit {commit} for regression tests...")
+                _print(f"  Crawler: Scanning commit {commit} for regression tests...", "yellow")
                 
                 # Call the function directly from the module
                 if hasattr(chromium_tools, 'fetch_associated_tests'):
@@ -132,7 +151,7 @@ class IntelCollector:
                         tests_data = func(commit, repo)
                     
                     if tests_data and not tests_data.startswith("No regression tests"):
-                        print(f"    ✓ Found relevant test files")
+                        _print(f"    ✓ Found relevant test files", "green")
                         # Attach to the result using a custom field
                         if result.success and isinstance(result.data, dict):
                             result.data['regression_tests'] = tests_data
@@ -170,23 +189,23 @@ class IntelCollector:
             chromium_refs = nvd_result.data.get("chromium_refs", {})
             
             # Show what we found
-            print(f"\n  📊 Chromium References Found:")
-            print(f"    Bug IDs: {len(chromium_refs.get('bug_ids', []))}")
-            print(f"    Commits: {len(chromium_refs.get('commits', []))}")
-            print(f"    Repositories: {chromium_refs.get('repositories', [])}")
-            print(f"    Release Notes: {len(chromium_refs.get('release_notes', []))}")
+            _print(f"\n  📊 Chromium References Found:", "bold cyan")
+            _print(f"    Bug IDs: {len(chromium_refs.get('bug_ids', []))}", "cyan")
+            _print(f"    Commits: {len(chromium_refs.get('commits', []))}", "cyan")
+            _print(f"    Repositories: {chromium_refs.get('repositories', [])}", "cyan")
+            _print(f"    Release Notes: {len(chromium_refs.get('release_notes', []))}", "cyan")
             
             # 1. Add commits directly from NVD references
             for commit_info in chromium_refs.get("commits", []):
                 repo = commit_info["repository"]
                 commit_hash = commit_info["hash"]
                 patches.append((repo, commit_hash))
-                print(f"    ✓ Direct commit: {repo}/{commit_hash[:12]}")
+                _print(f"    ✓ Direct commit: {repo}/{commit_hash[:12]}", "green")
             
             # 2. Fetch commits from Bug Tracker
             bug_tracker = ChromiumBugTrackerSource()
             for bug_id in chromium_refs.get("bug_ids", []):
-                print(f"  🔍 Fetching bug tracker issue {bug_id}...")
+                _print(f"  🔍 Fetching bug tracker issue {bug_id}...", "yellow")
                 bug_result = bug_tracker.collect_bug(bug_id)
                 
                 if bug_result.success and bug_result.data.get("commits"):
@@ -198,18 +217,18 @@ class IntelCollector:
                         if chromium_refs.get("repositories"):
                             repo = chromium_refs["repositories"][0]
                         patches.append((repo, commit))
-                    print(f"    ✓ Found {len(commits_found)} commit(s) in bug {bug_id}")
+                    _print(f"    ✓ Found {len(commits_found)} commit(s) in bug {bug_id}", "green")
                     results["bug_tracker"] = bug_result
                 else:
-                    print(f"    ✗ No commits found in bug {bug_id}")
+                    _print(f"    ✗ No commits found in bug {bug_id}", "yellow")
 
             # Deduplicate patches
             patches = list(set(patches))
             
             if patches:
-                print(f"\n  📦 Total unique commits to fetch: {len(patches)}")
+                _print(f"\n  📦 Total unique commits to fetch: {len(patches)}", "bold green")
             else:
-                print(f"\n  ⚠️  No commits found in NVD references or bug tracker")
+                _print(f"\n  ⚠️  No commits found in NVD references or bug tracker", "yellow")
 
         # Collect patches
         if patches:
@@ -218,8 +237,8 @@ class IntelCollector:
                 results[f"patch_{i}"] = pr
                 if pr.success:
                     files_changed = len(pr.data.get("files_changed", []))
-                    print(f"    ✓ Patch {i}: {files_changed} files changed")
+                    _print(f"    ✓ Patch {i}: {files_changed} files changed", "green")
 
         # Fuse all results
-        print(f"\n  🔗 Fusing intelligence from {len(results)} sources...")
+        _print(f"\n  🔗 Fusing intelligence from {len(results)} sources...", "bold cyan")
         return self.fusion.fuse(cve_id, results)

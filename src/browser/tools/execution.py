@@ -16,6 +16,25 @@ from dataclasses import dataclass, field
 
 from .debug import CrashAnalyzer, ASANParser
 
+# Import Rich console for better output
+try:
+    from ..utils.rich_console import console
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+    console = None
+
+
+def _print(message: str, style: str = None):
+    """Print with Rich if available, otherwise use plain print."""
+    if RICH_AVAILABLE and console:
+        if style:
+            console.print(f"[{style}]{message}[/{style}]")
+        else:
+            console.print(message)
+    else:
+        print(message)
+
 
 @dataclass
 class ExecutionResult:
@@ -433,7 +452,7 @@ class MultiVersionTester:
         results = {}
 
         for version in versions:
-            print(f"  Testing version {version}...")
+            _print(f"  Testing version {version}...", "cyan")
 
             if poc_type == "js":
                 result = self._test_d8(poc_code, version, timeout)
@@ -443,7 +462,7 @@ class MultiVersionTester:
             results[version] = result
 
             status = "CRASH" if result.crashed else "OK"
-            print(f"    {status} (exit: {result.exit_code})")
+            _print(f"    {status} (exit: {result.exit_code})", "green" if result.crashed else "yellow")
 
         return results
 

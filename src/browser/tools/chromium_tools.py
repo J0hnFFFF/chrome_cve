@@ -14,6 +14,25 @@ from agentlib.lib import tools
 CHROMIUM_GITILES = "https://chromium.googlesource.com"
 CHROMIUM_REVIEW = "https://chromium-review.googlesource.com"
 
+# Import Rich console for better output
+try:
+    from ..utils.rich_console import console
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+    console = None
+
+
+def _print(message: str, style: str = None):
+    """Print with Rich if available, otherwise use plain print."""
+    if RICH_AVAILABLE and console:
+        if style:
+            console.print(f"[{style}]{message}[/{style}]")
+        else:
+            console.print(message)
+    else:
+        print(message)
+
 
 @tools.tool
 def fetch_chromium_commit(commit_hash: str, repo: str = "chromium/src") -> str:
@@ -56,8 +75,8 @@ def fetch_chromium_file(file_path: str, commit_hash: str = "main", repo: str = "
 
     if file_path.startswith("v8/"):
         actual_repo = "v8/v8"
-        actual_path = file_path[3:]  # Strip "v8/" prefix
-        print(f"    [Tool] Auto-corrected: repo={actual_repo}, path={actual_path}")
+        actual_path = file_path[3:]  # Strip "v8/"
+        _print(f"    [Tool] Auto-corrected: repo={actual_repo}, path={actual_path}", "yellow")
 
     # Use HEAD for default if main doesn't work
     actual_commit = commit_hash
@@ -76,7 +95,7 @@ def fetch_chromium_file(file_path: str, commit_hash: str = "main", repo: str = "
         elif response.status_code == 404 and actual_repo == "v8/v8":
             # Try with chromium/src if v8/v8 failed
             fallback_url = f"{CHROMIUM_GITILES}/chromium/src/+/{commit_hash}/{file_path}?format=TEXT"
-            print(f"    [Tool] Trying fallback: chromium/src/{file_path}")
+            _print(f"    [Tool] Trying fallback: chromium/src/{file_path}", "yellow")
             response = requests.get(fallback_url, timeout=30)
             if response.status_code == 200:
                 content = base64.b64decode(response.content).decode('utf-8', errors='ignore')
@@ -478,7 +497,7 @@ def fetch_associated_tests(commit_hash: str, repo: str = "chromium/src") -> str:
     file_lines = files_result.split('\n')[1:] # Skip header
     found_tests = []
     
-    print(f"    [Crawler] Scanning {len(file_lines)} files for tests...")
+    _print(f"    [Crawler] Scanning {len(file_lines)} files for tests...", "cyan")
     
     for line in file_lines:
         file_path = line.strip().lstrip('- ')
@@ -491,7 +510,7 @@ def fetch_associated_tests(commit_hash: str, repo: str = "chromium/src") -> str:
                 break
                 
         if is_candidate:
-            print(f"    [Crawler] Found candidate: {file_path}")
+            _print(f"    [Crawler] Found candidate: {file_path}", "green")
             # Fetch file content
             # Use invoke instead of .func to avoid deprecation warning
             if hasattr(fetch_chromium_file, 'invoke'):
@@ -504,7 +523,7 @@ def fetch_associated_tests(commit_hash: str, repo: str = "chromium/src") -> str:
                     "content": content
                 })
             else:
-                print(f"    [Crawler] Failed to fetch {file_path}")
+                _print(f"    [Crawler] Failed to fetch {file_path}", "red")
 
     if not found_tests:
         return "No regression tests found in this commit."
