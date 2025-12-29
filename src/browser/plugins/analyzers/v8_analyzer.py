@@ -360,4 +360,3 @@ class V8AnalyzerPlugin(AnalyzerPlugin):
             parts.append(f"Verification: {poc_strategy['verification']}")
         
         return " | ".join(parts) if parts else "See deep analysis"
-```
