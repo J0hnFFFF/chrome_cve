@@ -183,39 +183,43 @@ Provide your assessment:
 
     def _build_generation_review_prompt(
         self,
-        result: Dict[str, Any],
+        result: Any,
         context: Dict[str, Any],
     ) -> str:
         """Build review prompt for generation stage."""
         analysis = context.get("analysis", {})
+        
+        # Handle list of candidates
+        if isinstance(result, list):
+            poc_text = ""
+            for i, poc in enumerate(result):
+                poc_text += f"\nCandidate #{i+1} ({poc.get('strategy', 'Unknown')}):\n"
+                poc_text += "```\n" + str(poc.get('code', 'No code'))[:1000] + "\n```\n"
+        else:
+            poc_text = f"```\n{result.get('code', 'No code')[:3000]}\n```"
 
-        return f"""Review this generated PoC:
+        return f"""Review these generated PoC candidate(s):
 
 Target Vulnerability:
 - Type: {analysis.get('vulnerability_type', 'unknown')}
 - Component: {analysis.get('component', 'unknown')}
 - Root Cause: {analysis.get('root_cause', 'N/A')}
 
-Generated PoC:
-```
-{result.get('code', 'No code')[:3000]}
-```
-
-Language: {result.get('language', 'unknown')}
-Expected Behavior: {result.get('expected_behavior', 'N/A')}
+Generated PoC(s):
+{poc_text}
 
 Evaluate:
-1. Does the code target the identified vulnerability?
-2. Is the code syntactically correct and runnable?
-3. Does it follow the recommended trigger approach?
-4. Are there obvious issues or improvements?
+1. Do these candidates target the identified vulnerability effectively?
+2. Which candidate strategy seems most promising?
+3. Are there obvious issues or common weaknesses across candidates?
+4. Should we proceed with these or regenerate?
 
 Provide your assessment:
 <assessment>APPROVE/NEEDS_REVISION</assessment>
 <score>0-10</score>
 <strengths>What was done well</strengths>
 <weaknesses>What needs improvement</weaknesses>
-<suggestions>Specific code improvements</suggestions>"""
+<suggestions>Specific code improvements or preferred strategy</suggestions>"""
 
     def _build_verification_review_prompt(
         self,
@@ -224,33 +228,44 @@ Provide your assessment:
     ) -> str:
         """Build review prompt for verification stage."""
         analysis = context.get("analysis", {})
-
-        return f"""Review this verification result:
-
-Expected Vulnerability: {analysis.get('vulnerability_type', 'unknown')}
-
-Verification Result:
+        
+        # Handle batch results
+        if "candidates" in result:
+            summary_text = f"""Batch Verification Result:
+- Total Candidates: {result.get('total', 0)}
+- Crashed: {result.get('crashed', 0)}
+- Successful Crash Strategy: {result.get('first_success', {}).get('strategy', 'None')}
+"""
+            if result.get('first_success'):
+                best = result['first_success']
+                summary_text += f"\nBest Crash Details:\n- Type: {best.get('crash_type')}\n- Strategy: {best.get('strategy')}"
+        else:
+            summary_text = f"""Verification Result:
 - Success: {result.get('success', False)}
 - Crash Detected: {result.get('crash_detected', False)}
 - Reproducibility: {result.get('reproducibility', 'N/A')}
 - Runs: {result.get('runs_crashed', 0)}/{result.get('runs_attempted', 0)}
 - Crash Type: {result.get('crash_type', 'N/A')}
+"""
 
-ASAN Report:
-{result.get('asan_report', 'None')[:1500]}
+        return f"""Review this verification result:
+
+Expected Vulnerability: {analysis.get('vulnerability_type', 'unknown')}
+
+{summary_text}
 
 Evaluate:
-1. Was the expected vulnerability triggered?
-2. Is the crash reproducible enough?
+1. Was the expected vulnerability triggered (by any candidate if batch)?
+2. If batch, which candidate was most effective?
 3. Does the crash signature match expectations?
-4. Should we try to improve the PoC?
+4. Is reproduction reliable enough?
 
 Provide your assessment:
 <assessment>APPROVE/NEEDS_REVISION</assessment>
 <score>0-10</score>
 <strengths>What was done well</strengths>
 <weaknesses>What needs improvement</weaknesses>
-<suggestions>Suggestions for improvement</suggestions>"""
+<suggestions>Further refinement ideas or next steps</suggestions>"""
 
     def _build_generic_review_prompt(
         self,

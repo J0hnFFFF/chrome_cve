@@ -247,13 +247,17 @@ class OrchestratorAgent(BaseReproAgent):
                     generator = self.agents.get("generator")
                     if generator and hasattr(generator, 'refine'):
                         logger.info("Attempting to refine PoC based on feedback")
+                        # If result is a list of candidates, pick the first one to refine
+                        poc_to_refine = result[0] if isinstance(result, list) and result else result
                         refined = generator.refine(
-                            poc=result,
+                            poc=poc_to_refine,
                             feedback=feedback,
                             analysis=context.get("analysis", {}),
                         )
                         if refined and refined.get("code"):
-                            result = refined
+                            # After refinement, we might switch back to single PoC or stay with list
+                            # For simplicity, we'll keep it as a list with one item if refined
+                            result = [refined]
                             continue
             else:
                 # No critic, return first result
@@ -312,10 +316,11 @@ class OrchestratorAgent(BaseReproAgent):
         request = AgentMessage.create_request(
             sender=self.name,
             receiver="generator",
-            action="generate",
+            action="generate_candidates",
             payload={
                 "analysis": analysis,
                 "cve_info": cve_info.to_dict() if hasattr(cve_info, 'to_dict') else cve_info,
+                "num_candidates": self.config.get("num_candidates", 3),
             },
         )
 
@@ -324,7 +329,10 @@ class OrchestratorAgent(BaseReproAgent):
 
         for resp in responses:
             if resp.payload.get("success"):
-                return resp.payload.get("result")
+                candidates = resp.payload.get("result")
+                if isinstance(candidates, list) and candidates:
+                    return candidates
+                return [candidates] if candidates else None
             else:
                 logger.warning(f"Generation failed: {resp.payload.get('error')}")
 
@@ -344,16 +352,30 @@ class OrchestratorAgent(BaseReproAgent):
             logger.warning("Verifier agent not registered")
             return None
 
-        request = AgentMessage.create_request(
-            sender=self.name,
-            receiver="verifier",
-            action="verify",
-            payload={
+        # If poc is a list, use verify_batch
+        if isinstance(poc, list):
+            action = "verify_batch"
+            payload = {
+                "candidates": poc,
+                "analysis": analysis,
+                "chrome_path": context.get("chrome_path"),
+                "d8_path": context.get("d8_path"),
+                "max_workers": self.config.get("max_workers", 3),
+            }
+        else:
+            action = "verify"
+            payload = {
                 "poc": poc,
                 "analysis": analysis,
                 "chrome_path": context.get("chrome_path"),
                 "d8_path": context.get("d8_path"),
-            },
+            }
+
+        request = AgentMessage.create_request(
+            sender=self.name,
+            receiver="verifier",
+            action=action,
+            payload=payload,
         )
 
         verifier.receive(request)
@@ -398,12 +420,24 @@ class OrchestratorAgent(BaseReproAgent):
         self,
         cve_info: Any,
         analysis: Dict[str, Any],
-        poc: Dict[str, Any],
+        poc: Any,
         verification: Dict[str, Any],
     ) -> None:
         """Learn from pipeline result."""
         cve_id = cve_info.cve_id if hasattr(cve_info, 'cve_id') else cve_info.get("cve_id", "")
-        success = verification.get("success", False)
+        
+        # Determine success from batch result or single result
+        if "candidates" in verification:
+            success = not verification.get("all_failed", True)
+            # If batch, pick the best candidate as 'the' poc for learning
+            if verification.get("first_success") and isinstance(poc, list):
+                idx = verification["first_success"]["index"]
+                poc_item = poc[idx]
+            else:
+                poc_item = poc[0] if isinstance(poc, list) and poc else poc
+        else:
+            success = verification.get("success", False)
+            poc_item = poc
 
         # Create case for learning
         from ...memory import CVECase
@@ -413,7 +447,7 @@ class OrchestratorAgent(BaseReproAgent):
             component=analysis.get("component", ""),
             vulnerability_type=analysis.get("vulnerability_type", ""),
             analysis_result=analysis,
-            poc_result=poc,
+            poc_result=poc_item if poc_item else (poc[0] if isinstance(poc, list) and poc else {}),
             verify_result=verification,
             success=success,
         )
@@ -422,7 +456,10 @@ class OrchestratorAgent(BaseReproAgent):
             case.successful_strategy = analysis.get("poc_strategy", "")
             logger.info(f"Learning from successful case: {cve_id}")
         else:
-            case.failed_approaches = [verification.get("error", "Unknown")]
+            error_msg = verification.get("error", "Unknown")
+            if "candidates" in verification:
+                error_msg = f"All {len(verification['candidates'])} candidates failed to trigger crash"
+            case.failed_approaches = [error_msg]
             logger.info(f"Learning from failed case: {cve_id}")
 
         # Learn from case (handles both success and failure)
@@ -436,15 +473,26 @@ class OrchestratorAgent(BaseReproAgent):
     def _create_success_result(
         self,
         analysis: Dict[str, Any],
-        poc: Dict[str, Any],
+        poc: Any,
         verification: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Create success result."""
+        success = False
+        best_poc = poc
+
+        if "candidates" in verification:
+            success = not verification.get("all_failed", True)
+            if verification.get("first_success") and isinstance(poc, list):
+                idx = verification["first_success"]["index"]
+                best_poc = poc[idx]
+        else:
+            success = verification.get("success", False)
+
         return {
-            "success": verification.get("success", False),
+            "success": success,
             "cve_id": self.pipeline_state.get("cve_id"),
             "analysis": analysis,
-            "poc": poc,
+            "poc": best_poc,
             "verification": verification,
             "attempts": self.pipeline_state.get("attempts", {}),
         }

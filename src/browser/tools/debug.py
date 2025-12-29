@@ -51,6 +51,7 @@ class CrashReport:
     registers: Dict[str, str] = field(default_factory=dict)
     stack_trace: List[StackFrame] = field(default_factory=list)
     asan_error: Optional[ASANError] = None
+    seh_exception: str = ""  # 0xC0000005, etc.
     raw_output: str = ""
 
 
@@ -301,9 +302,46 @@ class CrashAnalyzer:
     Combines ASAN parsing, stack trace analysis, and crash classification.
     """
 
-    def __init__(self):
+    SEH_MAP = {
+        "0xC0000005": "Access Violation",
+        "0xC00000FD": "Stack Overflow",
+        "0xC000001D": "Illegal Instruction",
+        "0xC0000094": "Integer Divide by Zero",
+        "0xC0000003": "Breakpoint",
+        "0xC0000096": "Privileged Instruction",
+    }
+
+    def __init__(self, symbolizer_path: str = None):
         self.asan_parser = ASANParser()
         self.stack_parser = StackTraceParser()
+        self.symbolizer_path = symbolizer_path or self._find_symbolizer()
+    
+    def _find_symbolizer(self) -> Optional[str]:
+        """
+        Find llvm-symbolizer in common locations.
+        
+        Returns:
+            Path to llvm-symbolizer or None
+        """
+        import shutil
+        
+        # Try to find in PATH
+        symbolizer = shutil.which('llvm-symbolizer')
+        if symbolizer:
+            return symbolizer
+        
+        # Try common Windows locations
+        import os
+        common_paths = [
+            r"C:\Program Files\LLVM\bin\llvm-symbolizer.exe",
+            r"C:\Program Files (x86)\LLVM\bin\llvm-symbolizer.exe",
+        ]
+        
+        for path in common_paths:
+            if os.path.exists(path):
+                return path
+        
+        return None
 
     def analyze(self, crash_output: str) -> CrashReport:
         """
@@ -337,11 +375,94 @@ class CrashAnalyzer:
         # Parse stack trace
         report.stack_trace = self.stack_parser.parse(crash_output)
 
+        # Parse SEH exceptions (Windows specific)
+        seh_match = re.search(r'(0xC000[0-9A-F]{4})', crash_output, re.I)
+        if seh_match:
+            report.seh_exception = seh_match.group(1)
+            if not report.crash_type:
+                report.crash_type = self._map_seh_to_crash_type(report.seh_exception)
+
         # Infer crash type from ASAN if not already set
         if not report.crash_type and report.asan_error:
             report.crash_type = report.asan_error.error_type
 
         return report
+    
+    def symbolize_stack_trace(
+        self,
+        stack_trace: List[StackFrame],
+        binary_path: str
+    ) -> List[StackFrame]:
+        """
+        Symbolize stack trace using llvm-symbolizer.
+        
+        Args:
+            stack_trace: List of stack frames with addresses
+            binary_path: Path to the binary (d8.exe or chrome.exe)
+            
+        Returns:
+            Updated stack frames with file and line information
+        """
+        if not self.symbolizer_path:
+            import logging
+            logging.warning("llvm-symbolizer not found, skipping symbolization")
+            return stack_trace
+        
+        import subprocess
+        import os
+        
+        if not os.path.exists(binary_path):
+            return stack_trace
+        
+        symbolized_frames = []
+        
+        for frame in stack_trace:
+            if not frame.address:
+                symbolized_frames.append(frame)
+                continue
+            
+            try:
+                # Run llvm-symbolizer
+                # Format: llvm-symbolizer --obj=<binary> <address>
+                result = subprocess.run(
+                    [self.symbolizer_path, f"--obj={binary_path}", frame.address],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                
+                if result.returncode == 0 and result.stdout:
+                    # Parse output
+                    # Format:
+                    # function_name
+                    # file:line:column
+                    lines = result.stdout.strip().split('\n')
+                    if len(lines) >= 2:
+                        function = lines[0]
+                        location = lines[1]
+                        
+                        # Parse file:line:column
+                        if ':' in location:
+                            parts = location.split(':')
+                            file_path = parts[0]
+                            line_num = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+                            
+                            # Update frame
+                            frame.function = function if function != '??' else frame.function
+                            frame.file = file_path if file_path != '??' else frame.file
+                            frame.line = line_num if line_num > 0 else frame.line
+                
+                symbolized_frames.append(frame)
+                
+            except Exception as e:
+                # If symbolization fails, keep original frame
+                symbolized_frames.append(frame)
+        
+        return symbolized_frames
+
+    def _map_seh_to_crash_type(self, code: str) -> str:
+        """Map SEH exit code to human readable crash type."""
+        return self.SEH_MAP.get(code.upper(), f"SEH Exception {code}")
 
     def get_summary(self, report: CrashReport) -> str:
         """Generate human-readable summary of crash."""

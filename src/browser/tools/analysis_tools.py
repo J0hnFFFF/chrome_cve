@@ -1,443 +1,398 @@
 """
-Analysis Tools
+Analysis Tools for Patch Verification
 
-Tool wrappers for CodeQL and Ghidra analysis services.
-These tools provide static and binary analysis capabilities for agents.
+Provides tools for verifying patch effectiveness through binary comparison
+and crash correlation.
 """
 
 import os
-import json
-from langchain_core import tools
+import subprocess
+import logging
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass
 
-from ..services.codeql_service import CodeQLService, create_codeql_service
-from ..services.ghidra_service import GhidraService, create_ghidra_service
-
-
-# Global service instances (lazy initialization)
-_codeql_service = None
-_ghidra_service = None
+logger = logging.getLogger(__name__)
 
 
-def get_codeql_service(source_path: str = None) -> CodeQLService:
-    """Get or create CodeQL service instance."""
-    global _codeql_service
-    if _codeql_service is None and source_path:
-        _codeql_service = CodeQLService(source_path)
-    return _codeql_service
+@dataclass
+class PatchVerificationReport:
+    """Report of patch verification results."""
+    patch_effective: bool
+    vulnerable_crashed: bool
+    fixed_crashed: bool
+    crash_in_patched_function: bool
+    patched_functions: List[str]
+    crash_location: Optional[str]
+    details: str
 
 
-def get_ghidra_service() -> GhidraService:
-    """Get or create Ghidra service instance."""
-    global _ghidra_service
-    if _ghidra_service is None:
-        _ghidra_service = GhidraService()
-    return _ghidra_service
-
-
-# ============================================================================
-# CodeQL Tools
-# ============================================================================
-
-@tools.tool
-def codeql_find_function_calls(function_name: str, source_path: str = None) -> str:
+def verify_patch_effectiveness(
+    vulnerable_binary: str,
+    fixed_binary: str,
+    poc_code: str,
+    crash_report: Any = None,
+    timeout: int = 30
+) -> PatchVerificationReport:
     """
-    Find all calls to a specific function using CodeQL.
-
+    Verify that a patch effectively fixes the vulnerability.
+    
+    This function:
+    1. Runs PoC on vulnerable binary (should crash)
+    2. Runs PoC on fixed binary (should not crash)
+    3. Compares binaries to identify patched functions
+    4. Correlates crash location with patched functions
+    
     Args:
-        function_name: Name of the function to search for
-        source_path: Path to source code (uses cached if not provided)
-
+        vulnerable_binary: Path to vulnerable binary (pre-patch)
+        fixed_binary: Path to fixed binary (post-patch)
+        poc_code: PoC code to test
+        crash_report: Optional CrashReport from vulnerable run
+        timeout: Execution timeout in seconds
+        
     Returns:
-        JSON string with call locations and file paths
+        PatchVerificationReport with verification results
     """
-    service = get_codeql_service(source_path)
-    if not service or not service.is_available():
-        return json.dumps({
-            "error": "CodeQL not available. Please install CodeQL CLI.",
-            "success": False
-        })
-
-    result = service.find_function_calls(function_name)
-    return json.dumps({
-        "success": result.success,
-        "query": result.query_name,
-        "results": result.results,
-        "error": result.error
-    }, indent=2)
-
-
-@tools.tool
-def codeql_find_callers(function_name: str, source_path: str = None) -> str:
-    """
-    Find all functions that call a specific function using CodeQL.
-
-    Args:
-        function_name: Name of the target function
-        source_path: Path to source code
-
-    Returns:
-        JSON string with caller functions and locations
-    """
-    service = get_codeql_service(source_path)
-    if not service or not service.is_available():
-        return json.dumps({
-            "error": "CodeQL not available",
-            "success": False
-        })
-
-    result = service.find_callers(function_name)
-    return json.dumps({
-        "success": result.success,
-        "query": result.query_name,
-        "results": result.results,
-        "error": result.error
-    }, indent=2)
-
-
-@tools.tool
-def codeql_find_callees(function_name: str, source_path: str = None) -> str:
-    """
-    Find all functions called by a specific function using CodeQL.
-
-    Args:
-        function_name: Name of the caller function
-        source_path: Path to source code
-
-    Returns:
-        JSON string with callee functions and locations
-    """
-    service = get_codeql_service(source_path)
-    if not service or not service.is_available():
-        return json.dumps({
-            "error": "CodeQL not available",
-            "success": False
-        })
-
-    result = service.find_callees(function_name)
-    return json.dumps({
-        "success": result.success,
-        "query": result.query_name,
-        "results": result.results,
-        "error": result.error
-    }, indent=2)
-
-
-@tools.tool
-def codeql_analyze_taint_flow(
-    source_function: str,
-    sink_pattern: str,
-    source_path: str = None
-) -> str:
-    """
-    Analyze taint flow from function parameters to potential sinks.
-
-    This is useful for tracking how user-controlled data flows through the code
-    and identifying potential security issues.
-
-    Args:
-        source_function: Function whose parameters are taint sources
-        sink_pattern: Pattern to match sink functions (e.g., "memcpy", "strcpy")
-        source_path: Path to source code
-
-    Returns:
-        JSON string with taint flow paths
-    """
-    service = get_codeql_service(source_path)
-    if not service or not service.is_available():
-        return json.dumps({
-            "error": "CodeQL not available",
-            "success": False
-        })
-
-    result = service.analyze_taint_flow(source_function, sink_pattern)
-    return json.dumps({
-        "success": result.success,
-        "query": result.query_name,
-        "results": result.results,
-        "error": result.error
-    }, indent=2)
-
-
-@tools.tool
-def codeql_find_memory_operations(file_pattern: str, source_path: str = None) -> str:
-    """
-    Find memory allocation/deallocation operations in files matching a pattern.
-
-    Useful for analyzing memory management in vulnerability-related code.
-
-    Args:
-        file_pattern: Glob pattern for files (e.g., "v8/src/*.cc")
-        source_path: Path to source code
-
-    Returns:
-        JSON string with memory operations and locations
-    """
-    service = get_codeql_service(source_path)
-    if not service or not service.is_available():
-        return json.dumps({
-            "error": "CodeQL not available",
-            "success": False
-        })
-
-    result = service.find_memory_operations(file_pattern)
-    return json.dumps({
-        "success": result.success,
-        "query": result.query_name,
-        "results": result.results,
-        "error": result.error
-    }, indent=2)
-
-
-@tools.tool
-def codeql_run_custom_query(query: str, source_path: str = None) -> str:
-    """
-    Run a custom CodeQL query.
-
-    Args:
-        query: CodeQL query string (must be valid CodeQL)
-        source_path: Path to source code
-
-    Returns:
-        JSON string with query results
-    """
-    service = get_codeql_service(source_path)
-    if not service or not service.is_available():
-        return json.dumps({
-            "error": "CodeQL not available",
-            "success": False
-        })
-
-    result = service.run_query(query)
-    return json.dumps({
-        "success": result.success,
-        "query": result.query_name,
-        "results": result.results,
-        "error": result.error
-    }, indent=2)
-
-
-@tools.tool
-def codeql_create_database(source_path: str, language: str = "cpp") -> str:
-    """
-    Create a CodeQL database from source code.
-
-    This must be done before running queries. Can take a long time for large codebases.
-
-    Args:
-        source_path: Path to source code root
-        language: Programming language (cpp, javascript, python, etc.)
-
-    Returns:
-        Status message
-    """
-    global _codeql_service
-    _codeql_service = CodeQLService(source_path)
-
-    if not _codeql_service.is_available():
-        return "Error: CodeQL CLI not found. Please install from https://github.com/github/codeql-cli-binaries"
-
-    success = _codeql_service.create_database(language)
-    if success:
-        return f"Successfully created CodeQL database for {source_path}"
+    from ..tools.execution import execute_poc
+    from ..tools.debug import CrashAnalyzer
+    
+    logger.info(f"Verifying patch effectiveness...")
+    logger.info(f"  Vulnerable: {vulnerable_binary}")
+    logger.info(f"  Fixed: {fixed_binary}")
+    
+    # Step 1: Run on vulnerable binary
+    logger.info("Step 1: Testing vulnerable binary...")
+    vuln_result = execute_poc(poc_code, vulnerable_binary, timeout=timeout)
+    vuln_crashed = vuln_result.get("crashed", False)
+    
+    if not vuln_crashed:
+        logger.warning("PoC did not crash on vulnerable binary!")
+        return PatchVerificationReport(
+            patch_effective=False,
+            vulnerable_crashed=False,
+            fixed_crashed=False,
+            crash_in_patched_function=False,
+            patched_functions=[],
+            crash_location=None,
+            details="PoC failed to trigger vulnerability on pre-patch binary"
+        )
+    
+    # Analyze crash
+    analyzer = CrashAnalyzer()
+    if not crash_report and vuln_result.get("output"):
+        crash_report = analyzer.analyze(vuln_result["output"])
+    
+    crash_location = None
+    if crash_report and crash_report.stack_trace:
+        # Get top frame location
+        top_frame = crash_report.stack_trace[0]
+        crash_location = f"{top_frame.get('function', '??')} at {top_frame.get('file', '??')}:{top_frame.get('line', '?')}"
+    
+    logger.info(f"  Vulnerable binary crashed: {crash_report.crash_type if crash_report else 'Unknown'}")
+    if crash_location:
+        logger.info(f"  Crash location: {crash_location}")
+    
+    # Step 2: Run on fixed binary
+    logger.info("Step 2: Testing fixed binary...")
+    fixed_result = execute_poc(poc_code, fixed_binary, timeout=timeout)
+    fixed_crashed = fixed_result.get("crashed", False)
+    
+    logger.info(f"  Fixed binary crashed: {fixed_crashed}")
+    
+    # Step 3: Compare binaries to find patched functions
+    logger.info("Step 3: Identifying patched functions...")
+    patched_functions = _identify_patched_functions(vulnerable_binary, fixed_binary)
+    
+    if patched_functions:
+        logger.info(f"  Found {len(patched_functions)} patched functions:")
+        for func in patched_functions[:5]:
+            logger.info(f"    - {func}")
     else:
-        return "Failed to create CodeQL database. Check source path and build configuration."
-
-
-# ============================================================================
-# Ghidra Tools
-# ============================================================================
-
-@tools.tool
-def ghidra_decompile_function(
-    binary_path: str,
-    function_name: str = ""
-) -> str:
-    """
-    Decompile a function from a binary using Ghidra.
-
-    Args:
-        binary_path: Path to the binary file
-        function_name: Function to decompile (empty for all functions)
-
-    Returns:
-        JSON string with decompiled C code
-    """
-    service = get_ghidra_service()
-    if not service or not service.is_available():
-        return json.dumps({
-            "error": "Ghidra not available. Please install from https://ghidra-sre.org/",
-            "success": False
-        })
-
-    result = service.decompile_function(binary_path, function_name)
-
-    functions_data = []
-    if result.functions:
-        for func in result.functions:
-            functions_data.append({
-                "name": func.name,
-                "address": func.address,
-                "size": func.size,
-                "decompiled": func.decompiled[:2000] if func.decompiled else ""  # Limit size
-            })
-
-    return json.dumps({
-        "success": result.success,
-        "functions": functions_data,
-        "error": result.error
-    }, indent=2)
-
-
-@tools.tool
-def ghidra_list_functions(binary_path: str) -> str:
-    """
-    List all functions in a binary.
-
-    Args:
-        binary_path: Path to the binary file
-
-    Returns:
-        JSON string with function names, addresses, and sizes
-    """
-    service = get_ghidra_service()
-    if not service or not service.is_available():
-        return json.dumps({
-            "error": "Ghidra not available",
-            "success": False
-        })
-
-    result = service.list_functions(binary_path)
-
-    functions_data = []
-    if result.functions:
-        for func in result.functions:
-            functions_data.append({
-                "name": func.name,
-                "address": func.address,
-                "size": func.size
-            })
-
-    return json.dumps({
-        "success": result.success,
-        "function_count": len(functions_data),
-        "functions": functions_data[:100],  # Limit to first 100
-        "error": result.error
-    }, indent=2)
-
-
-@tools.tool
-def ghidra_compare_binaries(
-    binary1_path: str,
-    binary2_path: str
-) -> str:
-    """
-    Compare two binaries to find differences (e.g., vulnerable vs patched).
-
-    This is useful for understanding what changed between versions and
-    identifying the patched functions.
-
-    Args:
-        binary1_path: Path to first binary (e.g., vulnerable version)
-        binary2_path: Path to second binary (e.g., patched version)
-
-    Returns:
-        JSON string with added, removed, and modified functions
-    """
-    service = get_ghidra_service()
-    if not service or not service.is_available():
-        return json.dumps({
-            "error": "Ghidra not available",
-            "success": False
-        })
-
-    result = service.compare_binaries(binary1_path, binary2_path)
-    return json.dumps(result, indent=2)
-
-
-@tools.tool
-def ghidra_analyze_binary(
-    binary_path: str,
-    project_name: str = "analysis"
-) -> str:
-    """
-    Import and analyze a binary with Ghidra.
-
-    This performs initial analysis including function detection,
-    cross-references, and type propagation.
-
-    Args:
-        binary_path: Path to the binary file
-        project_name: Name for the Ghidra project
-
-    Returns:
-        Status message
-    """
-    service = get_ghidra_service()
-    if not service or not service.is_available():
-        return "Error: Ghidra not found. Please install from https://ghidra-sre.org/"
-
-    success = service.analyze_binary(binary_path, project_name)
-    if success:
-        return f"Successfully analyzed binary: {binary_path}"
+        logger.warning("  Could not identify patched functions")
+    
+    # Step 4: Correlate crash with patch
+    crash_in_patched = False
+    if crash_location and patched_functions:
+        # Check if crash function is in patched functions
+        crash_func = crash_location.split(" at ")[0] if " at " in crash_location else crash_location
+        crash_in_patched = any(crash_func in pf or pf in crash_func for pf in patched_functions)
+        logger.info(f"  Crash in patched function: {crash_in_patched}")
+    
+    # Determine patch effectiveness
+    patch_effective = vuln_crashed and not fixed_crashed
+    
+    # Build details
+    details_parts = []
+    details_parts.append(f"Vulnerable binary: {'CRASHED' if vuln_crashed else 'NO CRASH'}")
+    details_parts.append(f"Fixed binary: {'CRASHED' if fixed_crashed else 'NO CRASH'}")
+    
+    if crash_location:
+        details_parts.append(f"Crash location: {crash_location}")
+    
+    if patched_functions:
+        details_parts.append(f"Patched functions: {', '.join(patched_functions[:3])}")
+        if len(patched_functions) > 3:
+            details_parts.append(f"  (and {len(patched_functions) - 3} more)")
+    
+    if patch_effective:
+        details_parts.append("✓ Patch is EFFECTIVE - vulnerability fixed")
     else:
-        return "Failed to analyze binary. Check file path and Ghidra installation."
+        if not vuln_crashed:
+            details_parts.append("✗ PoC did not trigger on vulnerable binary")
+        elif fixed_crashed:
+            details_parts.append("✗ PoC still crashes on fixed binary - patch may be incomplete")
+    
+    return PatchVerificationReport(
+        patch_effective=patch_effective,
+        vulnerable_crashed=vuln_crashed,
+        fixed_crashed=fixed_crashed,
+        crash_in_patched_function=crash_in_patched,
+        patched_functions=patched_functions,
+        crash_location=crash_location,
+        details="\n".join(details_parts)
+    )
 
 
-# ============================================================================
-# Utility Tools
-# ============================================================================
-
-@tools.tool
-def check_analysis_tools_status() -> str:
+def _identify_patched_functions(
+    vulnerable_binary: str,
+    fixed_binary: str
+) -> List[str]:
     """
-    Check availability of analysis tools (CodeQL, Ghidra).
-
+    Identify functions that were modified between two binaries.
+    
+    Uses various strategies:
+    1. Ghidra binary diff (if available)
+    2. Simple size comparison
+    3. Symbol table diff
+    
+    Args:
+        vulnerable_binary: Path to pre-patch binary
+        fixed_binary: Path to post-patch binary
+        
     Returns:
-        JSON string with tool availability status
+        List of function names that were modified
     """
-    codeql_available = False
-    ghidra_available = False
-
+    patched_functions = []
+    
+    # Strategy 1: Try Ghidra comparison (if available)
     try:
-        codeql_service = CodeQLService("/tmp")
-        codeql_available = codeql_service.is_available()
-    except:
-        pass
-
+        patched_functions = _ghidra_compare_binaries(vulnerable_binary, fixed_binary)
+        if patched_functions:
+            return patched_functions
+    except Exception as e:
+        logger.debug(f"Ghidra comparison failed: {e}")
+    
+    # Strategy 2: Symbol table comparison (simpler fallback)
     try:
-        ghidra_service = GhidraService()
-        ghidra_available = ghidra_service.is_available()
-    except:
-        pass
+        patched_functions = _compare_symbol_tables(vulnerable_binary, fixed_binary)
+        if patched_functions:
+            return patched_functions
+    except Exception as e:
+        logger.debug(f"Symbol table comparison failed: {e}")
+    
+    # Strategy 3: Heuristic based on file size
+    try:
+        vuln_size = os.path.getsize(vulnerable_binary)
+        fixed_size = os.path.getsize(fixed_binary)
+        size_diff = abs(fixed_size - vuln_size)
+        
+        if size_diff > 0:
+            logger.info(f"Binary size difference: {size_diff} bytes")
+            # Return a generic indicator
+            return ["<modified_functions>"]
+    except Exception as e:
+        logger.debug(f"Size comparison failed: {e}")
+    
+    return []
 
-    return json.dumps({
-        "codeql": {
-            "available": codeql_available,
-            "install_url": "https://github.com/github/codeql-cli-binaries"
-        },
-        "ghidra": {
-            "available": ghidra_available,
-            "install_url": "https://ghidra-sre.org/"
-        }
-    }, indent=2)
+
+def _ghidra_compare_binaries(
+    binary1: str,
+    binary2: str
+) -> List[str]:
+    """
+    Use Ghidra to compare two binaries and identify changed functions.
+    
+    Note: This requires Ghidra to be installed and configured.
+    Currently returns empty list as placeholder.
+    
+    Args:
+        binary1: First binary path
+        binary2: Second binary path
+        
+    Returns:
+        List of changed function names
+    """
+    # Placeholder for Ghidra integration
+    # Real implementation would:
+    # 1. Check if Ghidra is available
+    # 2. Run Ghidra headless analyzer on both binaries
+    # 3. Use Ghidra's diff tool to compare
+    # 4. Extract changed function names
+    
+    logger.debug("Ghidra binary comparison not yet implemented")
+    return []
 
 
-# Tool collections
-CODEQL_TOOLS = [
-    codeql_find_function_calls,
-    codeql_find_callers,
-    codeql_find_callees,
-    codeql_analyze_taint_flow,
-    codeql_find_memory_operations,
-    codeql_run_custom_query,
-    codeql_create_database,
-]
+def _compare_symbol_tables(
+    binary1: str,
+    binary2: str
+) -> List[str]:
+    """
+    Compare symbol tables of two binaries using nm or similar tools.
+    
+    Args:
+        binary1: First binary path
+        binary2: Second binary path
+        
+    Returns:
+        List of functions with different sizes/addresses
+    """
+    changed_functions = []
+    
+    try:
+        # Try using nm (Unix) or dumpbin (Windows)
+        if os.name == 'nt':
+            # Windows: use dumpbin if available
+            return _compare_with_dumpbin(binary1, binary2)
+        else:
+            # Unix: use nm
+            return _compare_with_nm(binary1, binary2)
+    except Exception as e:
+        logger.debug(f"Symbol table comparison error: {e}")
+    
+    return changed_functions
 
-GHIDRA_TOOLS = [
-    ghidra_decompile_function,
-    ghidra_list_functions,
-    ghidra_compare_binaries,
-    ghidra_analyze_binary,
-]
 
-STATIC_ANALYSIS_TOOLS = CODEQL_TOOLS + GHIDRA_TOOLS + [check_analysis_tools_status]
+def _compare_with_nm(binary1: str, binary2: str) -> List[str]:
+    """Compare using nm tool (Unix)."""
+    try:
+        # Get symbols from both binaries
+        result1 = subprocess.run(
+            ["nm", "-C", "-S", binary1],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        result2 = subprocess.run(
+            ["nm", "-C", "-S", binary2],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result1.returncode != 0 or result2.returncode != 0:
+            return []
+        
+        # Parse symbols (simplified)
+        symbols1 = set(result1.stdout.split('\n'))
+        symbols2 = set(result2.stdout.split('\n'))
+        
+        # Find differences
+        diff = symbols1.symmetric_difference(symbols2)
+        
+        # Extract function names
+        changed = []
+        for line in diff:
+            parts = line.split()
+            if len(parts) >= 3 and parts[1] in ['T', 't']:  # Text/code symbols
+                changed.append(parts[-1])
+        
+        return changed[:20]  # Limit to 20
+        
+    except Exception as e:
+        logger.debug(f"nm comparison failed: {e}")
+        return []
+
+
+def _compare_with_dumpbin(binary1: str, binary2: str) -> List[str]:
+    """Compare using dumpbin tool (Windows)."""
+    # Placeholder for Windows implementation
+    logger.debug("dumpbin comparison not yet implemented")
+    return []
+
+
+def generate_patch_verification_report(
+    report: PatchVerificationReport,
+    output_format: str = "markdown"
+) -> str:
+    """
+    Generate a formatted patch verification report.
+    
+    Args:
+        report: PatchVerificationReport object
+        output_format: "markdown" or "text"
+        
+    Returns:
+        Formatted report string
+    """
+    if output_format == "markdown":
+        return _generate_markdown_report(report)
+    else:
+        return _generate_text_report(report)
+
+
+def _generate_markdown_report(report: PatchVerificationReport) -> str:
+    """Generate Markdown formatted report."""
+    lines = []
+    lines.append("# Patch Verification Report\n")
+    
+    # Summary
+    lines.append("## Summary\n")
+    if report.patch_effective:
+        lines.append("✅ **Patch is EFFECTIVE** - Vulnerability successfully fixed\n")
+    else:
+        lines.append("❌ **Patch verification FAILED**\n")
+    
+    # Test Results
+    lines.append("## Test Results\n")
+    lines.append("| Binary | Crashed | Status |")
+    lines.append("|--------|---------|--------|")
+    lines.append(f"| Vulnerable | {'Yes' if report.vulnerable_crashed else 'No'} | {'✓ Expected' if report.vulnerable_crashed else '✗ Unexpected'} |")
+    lines.append(f"| Fixed | {'Yes' if report.fixed_crashed else 'No'} | {'✓ Expected' if not report.fixed_crashed else '✗ Unexpected'} |\n")
+    
+    # Crash Location
+    if report.crash_location:
+        lines.append("## Crash Location\n")
+        lines.append(f"```\n{report.crash_location}\n```\n")
+    
+    # Patched Functions
+    if report.patched_functions:
+        lines.append("## Patched Functions\n")
+        for func in report.patched_functions[:10]:
+            lines.append(f"- `{func}`")
+        if len(report.patched_functions) > 10:
+            lines.append(f"\n*...and {len(report.patched_functions) - 10} more*\n")
+    
+    # Correlation
+    if report.crash_in_patched_function:
+        lines.append("\n## Correlation\n")
+        lines.append("✅ Crash occurred in a patched function - Strong evidence of patch effectiveness\n")
+    
+    # Details
+    lines.append("## Details\n")
+    lines.append(f"```\n{report.details}\n```\n")
+    
+    return "\n".join(lines)
+
+
+def _generate_text_report(report: PatchVerificationReport) -> str:
+    """Generate plain text report."""
+    return f"""
+Patch Verification Report
+{'='*70}
+
+Summary: {'EFFECTIVE' if report.patch_effective else 'FAILED'}
+
+Test Results:
+  Vulnerable binary: {'CRASHED' if report.vulnerable_crashed else 'NO CRASH'}
+  Fixed binary: {'CRASHED' if report.fixed_crashed else 'NO CRASH'}
+
+{f'Crash Location: {report.crash_location}' if report.crash_location else ''}
+
+{f'Patched Functions ({len(report.patched_functions)}):' if report.patched_functions else ''}
+{chr(10).join(f'  - {func}' for func in report.patched_functions[:10])}
+
+Details:
+{report.details}
+{'='*70}
+"""

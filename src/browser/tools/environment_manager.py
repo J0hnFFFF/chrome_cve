@@ -10,8 +10,10 @@ import platform
 import subprocess
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any
-from dataclasses import dataclass
+from typing import Optional, Dict, Any, List, Tuple
+from dataclasses import dataclass, field
+import winreg
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,9 @@ class VerificationEnv:
     chrome_path: Optional[str] = None
     asan_enabled: bool = False
     version: str = ""
+    toolchain: Dict[str, Any] = field(default_factory=dict)
+    d8_version: str = ""
+    chrome_version: str = ""
     
     def is_valid(self) -> bool:
         """Check if environment has at least one valid binary."""
@@ -55,6 +60,11 @@ class EnvironmentManager:
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         r".\volumes\chrome\chrome.exe",
     ]
+    
+    # Registry keys for Chrome and VS
+    REG_CHROME_PATH = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"
+    REG_VS_PATH = r"SOFTWARE\Microsoft\VisualStudio\SxS\VS7"
+    REG_SDK_PATH = r"SOFTWARE\Microsoft\Microsoft SDKs\Windows\v10.0"
     
     def __init__(self, config: Dict[str, Any] = None):
         """
@@ -103,8 +113,16 @@ class EnvironmentManager:
             env.chrome_path = self._find_chrome()
             if env.chrome_path:
                 logger.info(f"✓ Found Chrome: {env.chrome_path}")
+                env.chrome_version = self.get_binary_version(env.chrome_path)
             else:
                 logger.warning("✗ No Chrome binary found")
+        
+        # Detect toolchain
+        env.toolchain = self.detect_toolchain()
+        
+        # Populate specific versions if available
+        if env.d8_path and not env.d8_version:
+            env.d8_version = self.get_binary_version(env.d8_path)
         
         # If nothing found, provide helpful message
         if not env.is_valid():
@@ -162,7 +180,7 @@ class EnvironmentManager:
     
     def _find_chrome(self) -> Optional[str]:
         """
-        Find Chrome binary in common locations.
+        Find Chrome binary in common locations and registry.
         
         Returns:
             Path to chrome.exe or None
@@ -172,12 +190,104 @@ class EnvironmentManager:
         if config_path and os.path.exists(config_path):
             return config_path
         
-        # 2. Check common paths
+        # 2. Check registry
+        registry_path = self._query_registry(winreg.HKEY_LOCAL_MACHINE, self.REG_CHROME_PATH, "")
+        if registry_path and os.path.exists(registry_path):
+            return registry_path
+            
+        # 3. Check common paths
         for path in self.WINDOWS_CHROME_PATHS:
             if os.path.exists(path):
                 return path
         
         return None
+
+    def _query_registry(self, hkey, path: str, name: str) -> Optional[str]:
+        """Query a registry value."""
+        try:
+            with winreg.OpenKey(hkey, path) as key:
+                value, _ = winreg.QueryValueEx(key, name)
+                return str(value)
+        except (OSError, ValueError):
+            return None
+
+    def detect_toolchain(self) -> Dict[str, Any]:
+        """
+        Detect Windows development toolchain (VS, SDK, depot_tools).
+        
+        Returns:
+            Dictionary with toolchain info
+        """
+        info = {
+            "vs_path": self._query_registry(winreg.HKEY_LOCAL_MACHINE, self.REG_VS_PATH, "15.0") or 
+                       self._query_registry(winreg.HKEY_LOCAL_MACHINE, self.REG_VS_PATH, "16.0") or
+                       self._query_registry(winreg.HKEY_LOCAL_MACHINE, self.REG_VS_PATH, "17.0"),
+            "sdk_path": self._query_registry(winreg.HKEY_LOCAL_MACHINE, self.REG_SDK_PATH, "InstallationFolder"),
+            "sdk_version": self._query_registry(winreg.HKEY_LOCAL_MACHINE, self.REG_SDK_PATH, "ProductVersion"),
+            "depot_tools": self._find_depot_tools(),
+            "wsl_available": self._detect_wsl()
+        }
+        
+        logger.info("[Toolchain] VS Path: " + str(info["vs_path"]))
+        logger.info("[Toolchain] SDK: " + str(info["sdk_version"]) + " at " + str(info["sdk_path"]))
+        
+        return info
+
+    def _find_depot_tools(self) -> Optional[str]:
+        """Find depot_tools in PATH or common locations."""
+        import shutil
+        gclient = shutil.which("gclient")
+        if gclient:
+            return str(Path(gclient).parent)
+        
+        # Common locations
+        paths = [r"D:\src\depot_tools", r"C:\src\depot_tools", r"C:\depot_tools"]
+        for p in paths:
+            if os.path.exists(os.path.join(p, "gclient")):
+                return p
+        return None
+
+    def _detect_wsl(self) -> bool:
+        """Detect if WSL is available."""
+        try:
+            result = subprocess.run(["wsl", "-l", "-q"], capture_output=True, text=True, timeout=2)
+            return result.returncode == 0
+        except (subprocess.SubprocessError, FileNotFoundError):
+            return False
+
+    def get_binary_version(self, path: str) -> str:
+        """
+        Get version of a binary file.
+        
+        Args:
+            path: Path to binary
+            
+        Returns:
+            Version string or "unknown"
+        """
+        if not os.path.exists(path):
+            return "unknown"
+            
+        try:
+            # Use PowerShell to get version info
+            cmd = ['powershell', '-Command', f"(Get-Item '{path}').VersionInfo.ProductVersion"]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except:
+            pass
+            
+        # Fallback to binary help output
+        try:
+            result = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=2)
+            if result.returncode == 0:
+                match = re.search(r'([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)', result.stdout)
+                if match:
+                    return match.group(1)
+        except:
+            pass
+            
+        return "unknown"
     
     def _check_asan_enabled(self, binary_path: str) -> bool:
         """
@@ -219,40 +329,68 @@ class EnvironmentManager:
         Get default verification environment.
         
         Returns:
-            VerificationEnv with auto-detected paths
+            VerificationEnv with auto-detected paths and toolchain
         """
         env = VerificationEnv()
         
+        # Detect toolchain first
+        env.toolchain = self.detect_toolchain()
+        
         # Try to find d8 first (most common for V8 CVEs)
         env.d8_path = self._find_d8(prefer_asan=True)
+        if env.d8_path:
+            env.d8_version = self.get_binary_version(env.d8_path)
+            env.asan_enabled = self._check_asan_enabled(env.d8_path)
         
         # Also try to find Chrome
         env.chrome_path = self._find_chrome()
-        
-        # Check ASAN
-        if env.d8_path:
-            env.asan_enabled = self._check_asan_enabled(env.d8_path)
+        if env.chrome_path:
+            env.chrome_version = self.get_binary_version(env.chrome_path)
         
         return env
     
-    def validate_env(self, env: VerificationEnv) -> tuple[bool, str]:
+        return True, ""
+
+    def find_all_versions(self, base_dir: str = None) -> List[Dict[str, str]]:
         """
-        Validate verification environment.
+        Discover all available d8/chrome versions in a directory.
         
         Args:
-            env: Environment to validate
+            base_dir: Base directory to search (defaults to ./volumes)
             
         Returns:
-            (is_valid, error_message)
+            List of dictionaries with version info
         """
-        if not env.is_valid():
-            return False, "No d8 or Chrome binary found"
+        if not base_dir:
+            base_dir = self.config.get("versions_dir", "./volumes")
+            
+        results = []
+        base_path = Path(base_dir)
+        if not base_path.exists():
+            return results
+            
+        # Search for chrome- folders
+        for folder in base_path.glob("chrome-*"):
+            if folder.is_dir():
+                version_str = folder.name.replace("chrome-", "")
+                
+                # Check for binaries
+                d8_path = None
+                for p in folder.rglob("d8.exe"):
+                    d8_path = str(p)
+                    break
+                    
+                chrome_path = None
+                for p in folder.rglob("chrome.exe"):
+                    chrome_path = str(p)
+                    break
+                    
+                if d8_path or chrome_path:
+                    results.append({
+                        "version": version_str,
+                        "d8_path": d8_path,
+                        "chrome_path": chrome_path,
+                        "asan": self._check_asan_enabled(d8_path) if d8_path else False
+                    })
         
-        # Check if paths exist
-        if env.d8_path and not os.path.exists(env.d8_path):
-            return False, f"d8 path does not exist: {env.d8_path}"
-        
-        if env.chrome_path and not os.path.exists(env.chrome_path):
-            return False, f"Chrome path does not exist: {env.chrome_path}"
-        
-        return True, ""
+        return sorted(results, key=lambda x: x["version"], reverse=True)

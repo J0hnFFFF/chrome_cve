@@ -154,17 +154,111 @@ class TemplateAutoLearner:
         """
         logger.info("Using CodeQL for pattern extraction")
         
-        # For now, fall back to heuristics
-        # TODO: Implement JavaScript CodeQL queries for pattern extraction
-        # This would require:
-        # 1. Creating temp JavaScript file
-        # 2. Creating CodeQL database
-        # 3. Running custom queries to extract:
-        #    - Function calls
-        #    - Control flow
-        #    - Constants
+        import tempfile
+        import os
+        from pathlib import Path
         
-        return self._extract_pattern_heuristic(poc_code)
+        try:
+            # 1. Creating temp JavaScript file
+            with tempfile.NamedTemporaryFile(
+                mode='w',
+                suffix='.js',
+                delete=False,
+                encoding='utf-8'
+            ) as f:
+                f.write(poc_code)
+                temp_js_path = f.name
+            
+            # 2. Creating CodeQL database
+            temp_db_dir = tempfile.mkdtemp(prefix='codeql_poc_')
+            
+            try:
+                logger.debug(f"Creating CodeQL database at {temp_db_dir}")
+                success = self.codeql_service.create_database(
+                    source_path=os.path.dirname(temp_js_path),
+                    language='javascript',
+                    db_path=temp_db_dir
+                )
+                
+                if not success:
+                    logger.warning("Failed to create CodeQL database, falling back to heuristics")
+                    return self._extract_pattern_heuristic(poc_code)
+                
+                # 3. Running custom queries to extract patterns
+                query_dir = Path(__file__).parent.parent.parent.parent / 'codeql_queries' / 'js'
+                
+                key_ops = []
+                control_flow = []
+                constants = []
+                
+                # Run JIT patterns query
+                jit_query = query_dir / 'extract_jit_patterns.ql'
+                if jit_query.exists():
+                    jit_result = self.codeql_service.run_query(
+                        str(jit_query),
+                        db_path=temp_db_dir
+                    )
+                    if jit_result.success and jit_result.results:
+                        key_ops.extend(['jit_optimization', 'trigger_loop'])
+                        logger.debug(f"Found {len(jit_result.results)} JIT patterns")
+                
+                # Run GC triggers query
+                gc_query = query_dir / 'extract_gc_triggers.ql'
+                if gc_query.exists():
+                    gc_result = self.codeql_service.run_query(
+                        str(gc_query),
+                        db_path=temp_db_dir
+                    )
+                    if gc_result.success and gc_result.results:
+                        for result in gc_result.results:
+                            if 'ArrayBuffer' in str(result):
+                                key_ops.append('ArrayBuffer')
+                            if 'TypedArray' in str(result):
+                                key_ops.append('TypedArray')
+                            if 'gc' in str(result).lower():
+                                key_ops.append('gc')
+                        logger.debug(f"Found {len(gc_result.results)} GC patterns")
+                
+                # Run control flow query
+                cf_query = query_dir / 'extract_control_flow.ql'
+                if cf_query.exists():
+                    cf_result = self.codeql_service.run_query(
+                        str(cf_query),
+                        db_path=temp_db_dir
+                    )
+                    if cf_result.success and cf_result.results:
+                        control_flow.extend(['nested_loop', 'conditional'])
+                        logger.debug(f"Found {len(cf_result.results)} control flow patterns")
+                
+                # Fallback to heuristic for constants extraction
+                heuristic_pattern = self._extract_pattern_heuristic(poc_code)
+                constants = heuristic_pattern.constants
+                
+                # Merge with heuristic results if CodeQL found nothing
+                if not key_ops:
+                    key_ops = heuristic_pattern.key_operations
+                if not control_flow:
+                    control_flow = heuristic_pattern.control_flow
+                
+                return Pattern(
+                    code=poc_code,
+                    key_operations=list(set(key_ops)),  # Deduplicate
+                    control_flow=list(set(control_flow)),
+                    constants=constants
+                )
+                
+            finally:
+                # Cleanup
+                import shutil
+                if os.path.exists(temp_db_dir):
+                    shutil.rmtree(temp_db_dir, ignore_errors=True)
+                if os.path.exists(temp_js_path):
+                    os.remove(temp_js_path)
+                    
+        except Exception as e:
+            logger.error(f"CodeQL extraction failed: {e}")
+            logger.debug("Falling back to heuristic extraction")
+            return self._extract_pattern_heuristic(poc_code)
     
     def _extract_pattern_heuristic(self, poc_code: str) -> Pattern:
         """Heuristic pattern extraction (fallback)."""
@@ -238,41 +332,200 @@ class TemplateAutoLearner:
     
     def _identify_parameters(self, pattern: Pattern) -> List[str]:
         """
-        Identify parameterizable values.
+        Identify parameterizable values using semantic analysis.
         
         Args:
             pattern: Extracted pattern
             
         Returns:
-            List of parameter names
+            List of parameter names with semantic meaning
+        """
+        params = []
+        seen_params = set()
+        
+        # Analyze code context to understand parameter semantics
+        code_lower = pattern.code.lower()
+        
+        # 1. Analyze constants in context
+        for const in pattern.constants:
+            value = const["value"]
+            position = const["position"]
+            
+            # Get surrounding context (50 chars before and after)
+            start = max(0, position - 50)
+            end = min(len(pattern.code), position + len(value) + 50)
+            context = pattern.code[start:end].lower()
+            
+            param_name = self._classify_constant_by_context(value, context, pattern)
+            
+            if param_name and param_name not in seen_params:
+                params.append(param_name)
+                seen_params.add(param_name)
+        
+        # 2. Infer parameters from key operations
+        operation_params = self._infer_params_from_operations(pattern)
+        for param in operation_params:
+            if param not in seen_params:
+                params.append(param)
+                seen_params.add(param)
+        
+        # 3. Infer parameters from control flow
+        control_params = self._infer_params_from_control_flow(pattern)
+        for param in control_params:
+            if param not in seen_params:
+                params.append(param)
+                seen_params.add(param)
+        
+        # Limit to reasonable number of parameters
+        return params[:8]  # Max 8 params for template clarity
+    
+    def _classify_constant_by_context(
+        self,
+        value: str,
+        context: str,
+        pattern: Pattern
+    ) -> str:
+        """
+        Classify a constant based on its usage context.
+        
+        Args:
+            value: The constant value
+            context: Surrounding code context
+            pattern: Full pattern for additional analysis
+            
+        Returns:
+            Semantic parameter name
+        """
+        # Hexadecimal values
+        if value.startswith("0x"):
+            try:
+                num_value = int(value, 16)
+                
+                # Memory addresses or large buffers
+                if num_value >= 0x10000:
+                    if 'arraybuffer' in context or 'buffer' in context:
+                        return 'buffer_size'
+                    elif 'address' in context or 'ptr' in context:
+                        return 'target_address'
+                    else:
+                        return 'heap_size'
+                
+                # Offsets or small values
+                elif num_value < 0x1000:
+                    if 'offset' in context or '[' in context:
+                        return 'array_offset'
+                    elif 'index' in context:
+                        return 'array_index'
+                    else:
+                        return 'magic_value'
+                
+                # Medium range - likely sizes or counts
+                else:
+                    if 'length' in context or 'size' in context:
+                        return 'allocation_size'
+                    else:
+                        return 'spray_count'
+                        
+            except ValueError:
+                return 'hex_constant'
+        
+        # Decimal values
+        elif value.isdigit():
+            num_value = int(value)
+            
+            # Large iteration counts (JIT triggers)
+            if num_value >= 10000:
+                if 'for' in context or 'while' in context:
+                    return 'jit_iterations'
+                else:
+                    return 'trigger_count'
+            
+            # Medium counts (spray/allocation)
+            elif num_value >= 100:
+                if 'new' in context or 'array' in context:
+                    return 'spray_count'
+                elif 'for' in context:
+                    return 'loop_count'
+                else:
+                    return 'allocation_count'
+            
+            # Small values (indices, offsets)
+            elif num_value >= 0:
+                if '[' in context or 'index' in context:
+                    return 'array_index'
+                elif 'length' in context:
+                    return 'array_length'
+                else:
+                    return 'small_constant'
+            
+            # Negative values (underflow triggers)
+            else:
+                return 'negative_offset'
+        
+        # String or other constants
+        else:
+            return 'string_constant'
+    
+    def _infer_params_from_operations(self, pattern: Pattern) -> List[str]:
+        """
+        Infer parameters based on key operations in the pattern.
+        
+        Args:
+            pattern: Extracted pattern
+            
+        Returns:
+            List of inferred parameter names
         """
         params = []
         
-        # Constants become parameters
-        seen_values = set()
-        for const in pattern.constants:
-            value = const["value"]
-            if value in seen_values:
-                continue
-            seen_values.add(value)
-            
-            # Determine parameter name based on value
-            if value.startswith("0x"):
-                if int(value, 16) > 0x1000:
-                    params.append("buffer_size")
-                else:
-                    params.append("offset")
-            elif value.isdigit():
-                num = int(value)
-                if num > 1000:
-                    params.append("iterations")
-                elif num < 0:
-                    params.append("negative_value")
-                else:
-                    params.append("count")
+        # JIT optimization patterns need iteration count
+        if 'jit_optimization' in pattern.key_operations or '%Optimize' in pattern.key_operations:
+            if 'jit_iterations' not in params:
+                params.append('jit_iterations')
         
-        # Deduplicate
-        return list(dict.fromkeys(params))[:5]  # Max 5 params
+        # GC patterns need allocation size
+        if 'gc' in pattern.key_operations:
+            if 'allocation_size' not in params:
+                params.append('allocation_size')
+        
+        # ArrayBuffer patterns need buffer size
+        if 'ArrayBuffer' in pattern.key_operations:
+            if 'buffer_size' not in params:
+                params.append('buffer_size')
+        
+        # TypedArray patterns need array length
+        if 'TypedArray' in pattern.key_operations:
+            if 'array_length' not in params:
+                params.append('array_length')
+        
+        return params
+    
+    def _infer_params_from_control_flow(self, pattern: Pattern) -> List[str]:
+        """
+        Infer parameters based on control flow patterns.
+        
+        Args:
+            pattern: Extracted pattern
+            
+        Returns:
+            List of inferred parameter names
+        """
+        params = []
+        
+        # Nested loops suggest spray or trigger patterns
+        if 'nested_loop' in pattern.control_flow:
+            params.append('outer_loop_count')
+            params.append('inner_loop_count')
+        
+        # Simple loops suggest iteration-based triggers
+        elif 'loop' in pattern.control_flow:
+            params.append('loop_iterations')
+        
+        # Conditionals suggest threshold or check values
+        if 'conditional' in pattern.control_flow:
+            params.append('threshold_value')
+        
+        return params
     
     def _generalize_with_llm(
         self,

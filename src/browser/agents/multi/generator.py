@@ -65,6 +65,7 @@ class GeneratorAgent(BaseReproAgent):
         """Register message handlers."""
         self._message_handlers = {
             "generate": self._handle_generate,
+            "generate_candidates": self._handle_generate_candidates,
             "refine": self._handle_refine,
         }
 
@@ -86,6 +87,47 @@ class GeneratorAgent(BaseReproAgent):
             )
         except Exception as e:
             logger.exception(f"Generation failed: {e}")
+            return msg.create_response(
+                sender=self.name,
+                payload={"error": str(e)},
+                success=False,
+            )
+
+    def _handle_generate_candidates(self, msg: AgentMessage) -> AgentMessage:
+        """Handle generate_candidates request."""
+        analysis = msg.payload.get("analysis", {})
+        cve_info = msg.payload.get("cve_info", {})
+        num_candidates = msg.payload.get("num_candidates", 3)
+
+        # Convert analysis to AnalysisResult if dict
+        from ...plugins.base import AnalysisResult
+        if isinstance(analysis, dict):
+            analysis_result = AnalysisResult(
+                vulnerability_type=analysis.get("vulnerability_type", ""),
+                component=analysis.get("component", ""),
+                root_cause=analysis.get("root_cause", ""),
+                trigger_conditions=analysis.get("trigger_conditions", []),
+                trigger_approach=analysis.get("trigger_approach", ""),
+                poc_strategy=analysis.get("poc_strategy", ""),
+                confidence=analysis.get("confidence", 0.0),
+            )
+        else:
+            analysis_result = analysis
+
+        try:
+            candidates = self.generate_candidates(
+                analysis=analysis_result,
+                cve_info=cve_info,
+                num_candidates=num_candidates
+            )
+
+            return msg.create_response(
+                sender=self.name,
+                payload={"result": candidates},
+                success=True,
+            )
+        except Exception as e:
+            logger.exception(f"Candidate generation failed: {e}")
             return msg.create_response(
                 sender=self.name,
                 payload={"error": str(e)},
@@ -241,6 +283,187 @@ Include comments explaining each step."""
         print(f"  [Generator] PoC generated: {len(result.get('code', ''))} chars, language: {result.get('language', 'unknown')}")
 
         return result
+
+    def generate_candidates(
+        self,
+        analysis: AnalysisResult,
+        cve_info: Dict[str, Any],
+        num_candidates: int = 3
+    ) -> List[Dict[str, Any]]:
+        """
+        Generate multiple candidate PoCs with different strategies.
+        
+        Args:
+            analysis: Vulnerability analysis
+            cve_info: CVE information
+            num_candidates: Number of candidates to generate (default: 3)
+            
+        Returns:
+            List of PoC result dictionaries
+        """
+        logger.info(f"[Generator] Generating {num_candidates} candidate PoCs")
+        
+        # Define different strategies
+        strategies = [
+            {
+                "name": "Direct Trigger",
+                "focus": "Directly trigger the vulnerability with minimal setup",
+                "style": "concise and focused"
+            },
+            {
+                "name": "Memory Spray",
+                "focus": "Use memory spraying techniques to increase reliability",
+                "style": "include heap manipulation and GC control"
+            },
+            {
+                "name": "JIT Optimization",
+                "focus": "Leverage JIT compilation and optimization",
+                "style": "use %OptimizeFunctionOnNextCall and type confusion"
+            },
+            {
+                "name": "Race Condition",
+                "focus": "Exploit timing and concurrency issues",
+                "style": "use Workers or async operations"
+            },
+            {
+                "name": "Object Confusion",
+                "focus": "Create object type confusion scenarios",
+                "style": "manipulate prototypes and object layouts"
+            },
+        ]
+        
+        # Select strategies based on vulnerability type
+        selected_strategies = self._select_strategies(
+            analysis.vulnerability_type,
+            strategies,
+            num_candidates
+        )
+        
+        candidates = []
+        
+        # Try template-based first
+        if self._template_library:
+            template_poc = self._try_template_generation(analysis, cve_info)
+            if template_poc:
+                template_poc["strategy"] = "Template-based"
+                candidates.append(template_poc)
+                logger.info(f"  [Generator] ✓ Candidate 1: Template-based")
+        
+        # Generate remaining candidates with different strategies
+        for i, strategy in enumerate(selected_strategies):
+            if len(candidates) >= num_candidates:
+                break
+                
+            try:
+                poc = self._generate_with_strategy(
+                    analysis,
+                    cve_info,
+                    strategy
+                )
+                poc["strategy"] = strategy["name"]
+                candidates.append(poc)
+                logger.info(f"  [Generator] ✓ Candidate {len(candidates)}: {strategy['name']}")
+            except Exception as e:
+                logger.warning(f"  [Generator] ✗ Failed to generate {strategy['name']}: {e}")
+        
+        # If we don't have enough, generate generic ones
+        while len(candidates) < num_candidates:
+            try:
+                poc = self._generate_with_llm(analysis, cve_info)
+                poc["strategy"] = f"Generic #{len(candidates) + 1}"
+                candidates.append(poc)
+            except:
+                break
+        
+        logger.info(f"[Generator] Generated {len(candidates)} candidates")
+        return candidates
+
+    def _select_strategies(
+        self,
+        vuln_type: str,
+        all_strategies: List[Dict],
+        count: int
+    ) -> List[Dict]:
+        """
+        Select most relevant strategies based on vulnerability type.
+        """
+        vuln_type_lower = vuln_type.lower()
+        
+        # Priority mapping
+        priority_map = {
+            "type-confusion": ["JIT Optimization", "Object Confusion", "Direct Trigger"],
+            "use-after-free": ["Memory Spray", "Object Confusion", "Direct Trigger"],
+            "race-condition": ["Race Condition", "Direct Trigger", "Memory Spray"],
+            "bounds-check": ["JIT Optimization", "Direct Trigger", "Memory Spray"],
+        }
+        
+        # Find matching priorities
+        priorities = []
+        for key, strats in priority_map.items():
+            if key in vuln_type_lower:
+                priorities = strats
+                break
+        
+        # Select strategies in priority order
+        selected = []
+        for priority_name in priorities:
+            for strategy in all_strategies:
+                if strategy["name"] == priority_name:
+                    selected.append(strategy)
+                    break
+            if len(selected) >= count:
+                break
+        
+        # Fill remaining with other strategies
+        for strategy in all_strategies:
+            if strategy not in selected:
+                selected.append(strategy)
+            if len(selected) >= count:
+                break
+        
+        return selected[:count]
+
+    def _generate_with_strategy(
+        self,
+        analysis: AnalysisResult,
+        cve_info: Dict[str, Any],
+        strategy: Dict[str, str]
+    ) -> Dict[str, Any]:
+        """
+        Generate PoC with a specific strategy.
+        """
+        # Prepare knowledge context
+        knowledge_context = self._prepare_knowledge_context(analysis)
+        additional_context = f"Relevant exploitation knowledge:\n{knowledge_context}" if knowledge_context else ""
+        
+        self._create_session(additional_context=additional_context)
+        
+        cve_id = cve_info.get("cve_id", "Unknown")
+        
+        # Strategy-specific prompt
+        generation_prompt = f"""Generate a PoC for this vulnerability using the '{strategy['name']}' strategy:
+
+CVE ID: {cve_id}
+Component: {analysis.component}
+Vulnerability Type: {analysis.vulnerability_type}
+Root Cause: {analysis.root_cause}
+
+Strategy Focus: {strategy['focus']}
+Style: {strategy['style']}
+
+Trigger Conditions:
+{chr(10).join('- ' + c for c in analysis.trigger_conditions) if analysis.trigger_conditions else '- See root cause'}
+
+Generate a {"JavaScript" if analysis.component.lower() in ["v8", "javascript"] else "HTML/JavaScript"} PoC that:
+1. Implements the {strategy['name']} approach
+2. {strategy['focus']}
+3. Demonstrates the impact (crash, memory corruption, etc.)
+
+Include comments explaining each step."""
+        
+        response = self._llm_chat(generation_prompt, use_tools=True)
+        return self._parse_generation_response(response, analysis, cve_id)
+
 
     def _generate_with_plugin(
         self,

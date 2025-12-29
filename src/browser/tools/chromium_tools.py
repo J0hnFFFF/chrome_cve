@@ -91,29 +91,124 @@ def fetch_chromium_file(file_path: str, commit_hash: str = "main", repo: str = "
 @tools.tool
 def search_chromium_code(query: str, repo: str = "chromium/src", max_results: int = 20) -> str:
     """
-    Search for code in Chromium source using Chromium Code Search.
+    Search for code in Chromium source using local git repository or web scraping.
 
     :param query: Search query (supports regex)
     :param repo: Repository to search
     :param max_results: Maximum number of results
     :return: Search results with file paths and matching lines
     """
-    # Use Chromium Code Search API
-    # Note: This is a simplified version; real implementation may need API key
-    search_url = f"https://source.chromium.org/search"
+    import os
+    import subprocess
+    from pathlib import Path
+    
+    # Strategy 1: Try local git repository first
+    possible_local_paths = [
+        r"d:\src\chromium\src",
+        r"C:\src\chromium\src",
+        os.path.expanduser("~/chromium/src"),
+        "./volumes/chromium/src",
+    ]
+    
+    local_repo = None
+    for path in possible_local_paths:
+        if os.path.isdir(path) and os.path.isdir(os.path.join(path, ".git")):
+            local_repo = path
+            break
+    
+    if local_repo:
+        try:
+            # Use git grep for fast searching
+            result = subprocess.run(
+                ["git", "grep", "-n", "-i", "--max-count=5", query],
+                cwd=local_repo,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0 and result.stdout:
+                lines = result.stdout.strip().split('\n')[:max_results]
+                output = [f"Found {len(lines)} results in local repository ({local_repo}):\n"]
+                
+                for line in lines:
+                    # Format: filename:line_number:content
+                    parts = line.split(':', 2)
+                    if len(parts) >= 3:
+                        file_path, line_num, content = parts[0], parts[1], parts[2]
+                        output.append(f"  {file_path}:{line_num}")
+                        output.append(f"    {content.strip()}")
+                
+                return "\n".join(output)
+            else:
+                return f"No results found in local repository for: {query}"
+                
+        except subprocess.TimeoutExpired:
+            return f"Search timed out in local repository"
+        except Exception as e:
+            # Fall through to web-based search
+            pass
+    
+    # Strategy 2: Use Chromium Code Search web interface
+    try:
+        from bs4 import BeautifulSoup
+        
+        # Chromium Code Search URL
+        search_url = f"https://source.chromium.org/search?q={requests.utils.quote(query)}&ss=chromium%2Fchromium%2Fsrc"
+        
+        response = requests.get(search_url, timeout=30, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Try to extract search results from the page
+            # Note: This is fragile and may break if Google changes the page structure
+            results = []
+            
+            # Look for code snippets or file references
+            # This is a simplified extraction - real implementation would need more robust parsing
+            code_blocks = soup.find_all('div', class_=lambda x: x and 'search' in x.lower())
+            
+            if code_blocks:
+                return f"""Found results on Chromium Code Search.
+Direct link: {search_url}
 
-    # For now, return a note about manual search
-    # In production, integrate with Chromium Code Search API or use local clone
-    return f"""
-Code search query: {query}
+Note: Please visit the link above to see detailed results.
+For programmatic access, consider using a local Chromium checkout with git grep."""
+            else:
+                return f"""Search query: {query}
 
-To search Chromium code:
+Web search available at: {search_url}
+
+For better results, use a local Chromium repository:
+  git clone https://chromium.googlesource.com/chromium/src
+  cd src && git grep -n "{query}"
+"""
+        else:
+            return f"Web search failed with status {response.status_code}"
+            
+    except ImportError:
+        return f"""BeautifulSoup not available for web scraping.
+
+Options:
+1. Install: pip install beautifulsoup4
+2. Use local repository: git clone https://chromium.googlesource.com/chromium/src
+3. Visit manually: https://source.chromium.org/search?q={query}
+"""
+    except Exception as e:
+        return f"""Search query: {query}
+
+Manual search options:
 1. Visit: https://source.chromium.org/chromium/chromium/src
 2. Search for: {query}
 
 Or use local repository:
-  git clone https://chromium.googlesource.com/{repo}
+  git clone https://chromium.googlesource.com/chromium/src
   cd src && git grep "{query}"
+
+Error: {str(e)}
 """
 
 
@@ -126,24 +221,109 @@ def fetch_chromium_bug(bug_id: str) -> str:
     :return: Bug information
     """
     # Chromium bugs are on bugs.chromium.org (Monorail)
-    # The API requires authentication for most bugs
     url = f"https://bugs.chromium.org/p/chromium/issues/detail?id={bug_id}"
 
     try:
-        response = requests.get(url, timeout=30)
+        response = requests.get(url, timeout=30, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        
         if response.status_code == 200:
-            # Parse basic info from HTML (simplified)
-            # In production, use Monorail API with auth
-            return f"""
-Bug URL: {url}
+            try:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Extract bug information from HTML
+                bug_info = {
+                    'id': bug_id,
+                    'url': url,
+                    'title': None,
+                    'status': None,
+                    'reporter': None,
+                    'owner': None,
+                    'components': [],
+                    'labels': [],
+                    'description': None,
+                    'comments_count': 0
+                }
+                
+                # Try to extract title
+                title_elem = soup.find('span', {'id': 'issuemeta'})
+                if not title_elem:
+                    title_elem = soup.find('title')
+                if title_elem:
+                    title_text = title_elem.get_text().strip()
+                    # Clean up title
+                    if 'Issue' in title_text:
+                        bug_info['title'] = title_text.split(':', 1)[-1].strip()
+                    else:
+                        bug_info['title'] = title_text
+                
+                # Try to extract status
+                status_elem = soup.find('span', string=re.compile(r'Status:', re.I))
+                if status_elem:
+                    status_value = status_elem.find_next_sibling()
+                    if status_value:
+                        bug_info['status'] = status_value.get_text().strip()
+                
+                # Try to extract labels
+                labels_section = soup.find_all('a', href=re.compile(r'q=label:'))
+                bug_info['labels'] = [label.get_text().strip() for label in labels_section[:10]]
+                
+                # Try to extract description (first comment)
+                comments = soup.find_all('div', class_=lambda x: x and 'comment' in str(x).lower())
+                if comments:
+                    bug_info['comments_count'] = len(comments)
+                    # Get first comment as description
+                    first_comment = comments[0]
+                    desc_text = first_comment.get_text().strip()
+                    if desc_text:
+                        # Limit description length
+                        bug_info['description'] = desc_text[:1000]
+                
+                # Format output
+                output = [f"Bug #{bug_id}"]
+                output.append(f"URL: {url}")
+                output.append("")
+                
+                if bug_info['title']:
+                    output.append(f"Title: {bug_info['title']}")
+                
+                if bug_info['status']:
+                    output.append(f"Status: {bug_info['status']}")
+                
+                if bug_info['labels']:
+                    output.append(f"Labels: {', '.join(bug_info['labels'][:5])}")
+                
+                if bug_info['description']:
+                    output.append("\nDescription:")
+                    output.append(bug_info['description'])
+                
+                if bug_info['comments_count'] > 0:
+                    output.append(f"\nComments: {bug_info['comments_count']}")
+                
+                output.append("\nNote: Visit the URL above for complete information and attachments.")
+                
+                return "\n".join(output)
+                
+            except ImportError:
+                return f"""Bug #{bug_id}
+URL: {url}
 
-Note: Full bug details may require authentication.
-Visit the URL above to see complete information.
-"""
+Note: BeautifulSoup not available for HTML parsing.
+Install with: pip install beautifulsoup4
+
+Visit the URL above to see complete information."""
+            except Exception as e:
+                return f"""Bug #{bug_id}
+URL: {url}
+
+Note: Could not parse bug details (Error: {str(e)})
+Visit the URL above to see complete information."""
         else:
-            return f"Error: Failed to fetch bug {bug_id}, status={response.status_code}"
+            return f"Error: Failed to fetch bug {bug_id}, status={response.status_code}\nURL: {url}"
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Error: {str(e)}\nBug URL: {url}"
 
 
 @tools.tool

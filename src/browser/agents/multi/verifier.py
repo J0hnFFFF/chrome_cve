@@ -7,7 +7,8 @@ Uses LLM for intelligent crash analysis and feedback.
 
 import re
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .base import BaseReproAgent, AgentMessage, AgentState
 from ...plugins import get_registry, PoCResult, VerifyResult
@@ -68,6 +69,7 @@ class VerifierAgent(BaseReproAgent):
         """Register message handlers."""
         self._message_handlers = {
             "verify": self._handle_verify,
+            "verify_batch": self._handle_verify_batch,
         }
 
     def _handle_verify(self, msg: AgentMessage) -> AgentMessage:
@@ -92,6 +94,36 @@ class VerifierAgent(BaseReproAgent):
             )
         except Exception as e:
             logger.exception(f"Verification failed: {e}")
+            return msg.create_response(
+                sender=self.name,
+                payload={"error": str(e)},
+                success=False,
+            )
+
+    def _handle_verify_batch(self, msg: AgentMessage) -> AgentMessage:
+        """Handle verify_batch request."""
+        candidates = msg.payload.get("candidates", [])
+        d8_path = msg.payload.get("d8_path", self.d8_path)
+        chrome_path = msg.payload.get("chrome_path", self.chrome_path)
+        max_workers = msg.payload.get("max_workers", 3)
+        timeout = msg.payload.get("timeout", self.timeout)
+
+        try:
+            results = self.verify_batch(
+                candidates=candidates,
+                d8_path=d8_path,
+                chrome_path=chrome_path,
+                max_workers=max_workers,
+                timeout=timeout
+            )
+
+            return msg.create_response(
+                sender=self.name,
+                payload={"result": results},
+                success=True,
+            )
+        except Exception as e:
+            logger.exception(f"Batch verification failed: {e}")
             return msg.create_response(
                 sender=self.name,
                 payload={"error": str(e)},
@@ -393,3 +425,260 @@ Provide concise, actionable suggestions."""
             "success": False,
             "error_message": "No suitable verifier plugin found",
         }
+    
+    def verify_differential(
+        self,
+        poc: PoCResult,
+        vulnerable_binary: str,
+        fixed_binary: str,
+        timeout: int = None
+    ) -> Dict[str, Any]:
+        """
+        Perform differential verification on vulnerable and fixed binaries.
+        
+        This verifies that:
+        1. PoC crashes on vulnerable version
+        2. PoC does NOT crash on fixed version
+        3. Confirms the patch actually fixed the vulnerability
+        
+        Args:
+            poc: PoC to verify
+            vulnerable_binary: Path to vulnerable binary (d8 or chrome)
+            fixed_binary: Path to fixed binary
+            timeout: Execution timeout (uses default if None)
+            
+        Returns:
+            Differential verification result with comparison
+        """
+        import os
+        from ...tools.execution import D8Executor, ChromeExecutor
+        
+        logger.info(f"[Verifier] Differential verification: vulnerable vs fixed")
+        
+        timeout = timeout or self.timeout
+        
+        # Determine executor type
+        is_d8 = vulnerable_binary.endswith('d8.exe') or vulnerable_binary.endswith('d8')
+        
+        results = {
+            "vulnerable": None,
+            "fixed": None,
+            "patch_effective": False,
+            "confidence": 0.0,
+            "analysis": ""
+        }
+        
+        try:
+            # Test on vulnerable version
+            logger.info(f"  Testing on vulnerable binary: {os.path.basename(vulnerable_binary)}")
+            if is_d8:
+                executor_vuln = D8Executor(vulnerable_binary)
+                vuln_result = executor_vuln.execute(poc.code, timeout=timeout)
+            else:
+                executor_vuln = ChromeExecutor(vulnerable_binary)
+                vuln_result = executor_vuln.execute(poc.code, timeout=timeout)
+            
+            results["vulnerable"] = {
+                "crashed": vuln_result.crashed,
+                "exit_code": vuln_result.exit_code,
+                "crash_type": vuln_result.crash_type,
+                "crash_address": vuln_result.crash_address
+            }
+            
+            # Test on fixed version
+            logger.info(f"  Testing on fixed binary: {os.path.basename(fixed_binary)}")
+            if is_d8:
+                executor_fixed = D8Executor(fixed_binary)
+                fixed_result = executor_fixed.execute(poc.code, timeout=timeout)
+            else:
+                executor_fixed = ChromeExecutor(fixed_binary)
+                fixed_result = executor_fixed.execute(poc.code, timeout=timeout)
+            
+            results["fixed"] = {
+                "crashed": fixed_result.crashed,
+                "exit_code": fixed_result.exit_code,
+                "crash_type": fixed_result.crash_type,
+                "crash_address": fixed_result.crash_address
+            }
+            
+            # Analyze results
+            if vuln_result.crashed and not fixed_result.crashed:
+                # Perfect case: crashes on vuln, not on fixed
+                results["patch_effective"] = True
+                results["confidence"] = 1.0
+                results["analysis"] = "✅ Patch is effective: PoC crashes vulnerable version but not fixed version"
+                logger.info("  ✅ Differential verification PASSED")
+            
+            elif vuln_result.crashed and fixed_result.crashed:
+                # Both crash - patch may not be effective
+                results["patch_effective"] = False
+                results["confidence"] = 0.3
+                results["analysis"] = "⚠️  Both versions crash - patch may not fix this vulnerability"
+                logger.warning("  ⚠️  Both versions crashed")
+            
+            elif not vuln_result.crashed and not fixed_result.crashed:
+                # Neither crash - PoC may be ineffective
+                results["patch_effective"] = False
+                results["confidence"] = 0.0
+                results["analysis"] = "❌ Neither version crashes - PoC may be ineffective"
+                logger.warning("  ❌ No crashes detected")
+            
+            else:
+                # Fixed crashes but vuln doesn't - unexpected
+                results["patch_effective"] = False
+                results["confidence"] = 0.0
+                results["analysis"] = "⚠️  Unexpected: fixed version crashes but vulnerable doesn't"
+                logger.warning("  ⚠️  Unexpected result pattern")
+            
+            # Symbolize stack traces if available
+            if vuln_result.crashed and vuln_result.stack_trace:
+                crash_report = self._crash_analyzer.analyze(vuln_result.stderr)
+                if crash_report.stack_trace:
+                    symbolized = self._crash_analyzer.symbolize_stack_trace(
+                        crash_report.stack_trace,
+                        vulnerable_binary
+                    )
+                    results["vulnerable"]["symbolized_stack"] = [
+                        str(frame) for frame in symbolized[:5]
+                    ]
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Differential verification failed: {e}")
+            return {
+                "vulnerable": None,
+                "fixed": None,
+                "patch_effective": False,
+                "confidence": 0.0,
+                "analysis": f"Error during differential verification: {str(e)}"
+            }
+
+    def verify_batch(
+        self,
+        candidates: List[Dict[str, Any]],
+        d8_path: str = None,
+        chrome_path: str = None,
+        max_workers: int = 3,
+        timeout: int = None
+    ) -> Dict[str, Any]:
+        """
+        Verify multiple candidate PoCs concurrently.
+        
+        Args:
+            candidates: List of PoC dictionaries to verify
+            d8_path: Path to d8 executable
+            chrome_path: Path to Chrome executable
+            max_workers: Maximum number of concurrent verifications
+            timeout: Timeout per verification
+            
+        Returns:
+            Dictionary with verification results
+        """
+        logger.info(f"[Verifier] Batch verification of {len(candidates)} candidates")
+        
+        d8_path = d8_path or self.d8_path
+        chrome_path = chrome_path or self.chrome_path
+        timeout = timeout or self.timeout
+        
+        results = {
+            "total": len(candidates),
+            "verified": 0,
+            "crashed": 0,
+            "candidates": [],
+            "first_success": None,
+            "all_failed": True
+        }
+        
+        def verify_single(index: int, poc: Dict[str, Any]) -> Dict[str, Any]:
+            """Verify a single PoC."""
+            try:
+                logger.info(f"  [Verifier] Verifying candidate #{index + 1}: {poc.get('strategy', 'Unknown')}")
+                
+                # Create PoCResult
+                poc_result = PoCResult(
+                    code=poc.get("code", ""),
+                    language=poc.get("language", "javascript"),
+                    expected_behavior=poc.get("expected_behavior", ""),
+                    success=False
+                )
+                
+                # Determine executor
+                if poc_result.language == "javascript" and d8_path:
+                    executor = D8Executor(d8_path)
+                    exec_result = executor.execute(poc_result.code, timeout=timeout)
+                elif chrome_path:
+                    executor = ChromeExecutor(chrome_path)
+                    exec_result = executor.execute(poc_result.code, timeout=timeout)
+                else:
+                    return {
+                        "index": index,
+                        "strategy": poc.get("strategy", "Unknown"),
+                        "success": False,
+                        "crashed": False,
+                        "error": "No suitable executor found"
+                    }
+                
+                # Analyze result
+                crashed = exec_result.crashed
+                
+                return {
+                    "index": index,
+                    "strategy": poc.get("strategy", "Unknown"),
+                    "success": True,
+                    "crashed": crashed,
+                    "exit_code": exec_result.exit_code,
+                    "crash_type": exec_result.crash_type if crashed else None,
+                    "execution_time": exec_result.execution_time,
+                    "poc_code": poc.get("code", "")[:200] + "..." if len(poc.get("code", "")) > 200 else poc.get("code", "")
+                }
+                
+            except Exception as e:
+                logger.error(f"  [Verifier] Failed to verify candidate #{index + 1}: {e}")
+                return {
+                    "index": index,
+                    "strategy": poc.get("strategy", "Unknown"),
+                    "success": False,
+                    "crashed": False,
+                    "error": str(e)
+                }
+        
+        # Execute verifications concurrently
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_index = {
+                executor.submit(verify_single, i, candidate): i
+                for i, candidate in enumerate(candidates)
+            }
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_index):
+                result = future.result()
+                results["candidates"].append(result)
+                
+                if result["success"]:
+                    results["verified"] += 1
+                    
+                if result.get("crashed", False):
+                    results["crashed"] += 1
+                    results["all_failed"] = False
+                    
+                    # Mark first successful crash
+                    if not results["first_success"]:
+                        results["first_success"] = result
+                        logger.info(f"  [Verifier] ✓ First crash found: Candidate #{result['index'] + 1} ({result['strategy']})")
+        
+        # Sort results by index
+        results["candidates"].sort(key=lambda x: x["index"])
+        
+        # Summary
+        logger.info(f"[Verifier] Batch verification complete:")
+        logger.info(f"  Total: {results['total']}")
+        logger.info(f"  Verified: {results['verified']}")
+        logger.info(f"  Crashed: {results['crashed']}")
+        
+        if results["first_success"]:
+            logger.info(f"  Best candidate: #{results['first_success']['index'] + 1} ({results['first_success']['strategy']})")
+        
+        return results
+
