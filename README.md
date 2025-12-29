@@ -159,18 +159,20 @@ cp config.yaml.example config.yaml
 
 **基础运行**:
 ```bash
-cd src/browser
-python main.py --cve CVE-2021-21220
+cd src
+python -m browser.main --cve CVE-2021-21220
 ```
 
 **多策略并行验证**:
 ```bash
-python main.py --cve CVE-2021-21220 --num-candidates 5 --parallel
+cd src
+python -m browser.main --cve CVE-2021-21220 --num-candidates 5 --parallel
 ```
 
 **双端验证**:
 ```bash
-python main.py --cve CVE-2021-21220 \
+cd src
+python -m browser.main --cve CVE-2021-21220 \
   --vulnerable-version 95.0.4638.69 \
   --fixed-version 96.0.4664.45 \
   --differential
@@ -178,7 +180,8 @@ python main.py --cve CVE-2021-21220 \
 
 **使用 WSL ASAN**:
 ```bash
-python main.py --cve CVE-2021-21220 --use-wsl --asan
+cd src
+python -m browser.main --cve CVE-2021-21220 --use-wsl --asan
 ```
 
 ---
